@@ -1,0 +1,449 @@
+{% extends "base.html" %}
+{% from "_macros.html" import severity_badge, status_badge, risk_bar, mitre_chip, empty, untrusted %}
+{% from "_response.html" import history_table, capability_list %}
+{% block title %}{{ incident.incident_id }} &mdash; SentinelForge{% endblock %}
+
+{% block content %}
+<nav class="crumbs"><a href="{{ url_for('pages.incidents') }}">Incidents</a> <span aria-hidden="true">/</span> <span class="mono">{{ incident.incident_id }}</span></nav>
+
+<section class="panel incident-head">
+  <div class="incident-title">
+    <h1><span class="mono">{{ incident.incident_id }}</span> {{ untrusted(incident.title, "untrusted title") }}</h1>
+    <div class="incident-badges">
+      {{ severity_badge(incident.severity) }}
+      {{ status_badge(incident.status) }}
+      {{ risk_bar(incident.risk_score) }}
+      <span class="chip chip-quiet" title="content fingerprint used by AI caching">v{{ incident.version }}</span>
+    </div>
+  </div>
+  <dl class="facts">
+    <div><dt>Host</dt><dd>{{ untrusted(incident.host) }}</dd></div>
+    <div><dt>Source IPs</dt><dd>{{ untrusted(incident.source_ips|join(", ")) }}</dd></div>
+    <div><dt>Users</dt><dd>{{ untrusted(incident.users|join(", ")) }}</dd></div>
+    <div><dt>First seen</dt><dd class="mono">{{ incident.first_seen|short_date }}</dd></div>
+    <div><dt>Last seen</dt><dd class="mono">{{ incident.last_seen|short_date }}</dd></div>
+    <div><dt>Alerts</dt><dd class="mono">{{ incident.alert_count }}</dd></div>
+    <div><dt>Unique events</dt><dd class="mono">{{ incident.event_count }}</dd></div>
+    <div><dt>Rules</dt><dd class="mono">{{ incident.rule_ids|join(", ")|or_dash }}</dd></div>
+  </dl>
+  <nav class="section-nav" aria-label="Incident sections">
+    <a href="#chain">Attack chain</a>
+    <a href="#timeline">Timeline</a>
+    <a href="#process">Process tree</a>
+    <a href="#network">Network</a>
+    <a href="#mitre">MITRE</a>
+    <a href="#ai">AI analysis</a>
+    <a href="#response">Response</a>
+    <a href="#evidence">Evidence</a>
+  </nav>
+</section>
+
+<div class="grid-2">
+  <section class="panel">
+    <header class="panel-head"><h2>Why these alerts were correlated</h2></header>
+    {% if correlation_reasons %}
+    <ul class="reasons">{% for reason in correlation_reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+    {% else %}{{ empty("Single alert: nothing was correlated.") }}{% endif %}
+    {% if incident.matched_chains %}
+    <p class="panel-note">Matched attack chain pattern(s): <span class="mono">{{ incident.matched_chains|join(", ") }}</span></p>
+    {% endif %}
+  </section>
+  <section class="panel">
+    <header class="panel-head"><h2>Deterministic risk score</h2></header>
+    <p class="score-line">{{ risk_bar(incident.risk_score) }} <span class="dim">computed by the Phase 2/3 engines, never by the AI layer</span></p>
+    {% if risk_explanation %}
+    <ul class="reasons">{% for line in risk_explanation %}<li class="mono">{{ line }}</li>{% endfor %}</ul>
+    {% else %}{{ empty("Not scored.") }}{% endif %}
+  </section>
+</div>
+
+<section class="panel" id="chain">
+  <header class="panel-head"><h2>Attack chain</h2>
+    <span class="dim">one step per detection that fired, in the order the engine saw them</span></header>
+  {% if attack_chain.stages %}
+  <ol class="chain">
+    {% for stage in attack_chain.stages %}
+    <li class="chain-step chain-{{ stage.severity }}">
+      <div class="chain-marker" aria-hidden="true">{{ loop.index }}</div>
+      <div class="chain-body">
+        <div class="chain-title">{{ untrusted(stage.label, "untrusted") }} {{ severity_badge(stage.severity) }}</div>
+        <div class="chain-meta mono dim">{{ stage.timestamp|short_date }} &middot; {{ stage.rule_id }} &middot; {{ stage.alert_id }}</div>
+        <div class="chain-desc">{{ untrusted(stage.description, "untrusted") }}</div>
+        <div>{{ mitre_chip(stage.mitre) }}</div>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}{{ empty("No alerts on this incident.") }}{% endif %}
+</section>
+
+<section class="panel" id="timeline">
+  <header class="panel-head"><h2>Timeline</h2>
+    <span class="dim">{{ timeline.total }} entries{% if timeline.truncated %} (showing the first {{ timeline.entries|length }}){% endif %}</span></header>
+  {% if timeline.entries %}
+  <table class="table table-dense timeline">
+    <thead><tr><th>Time</th><th>Kind</th><th>What</th><th>Source</th><th>Process</th><th>User</th><th>IP</th><th>ATT&amp;CK</th><th>Severity</th><th>Evidence</th></tr></thead>
+    <tbody>
+    {% for entry in timeline.entries %}
+      <tr class="row-{{ entry.type }}">
+        <td class="mono" title="{{ entry.timestamp }}">{{ entry.timestamp|short_time }}</td>
+        <td><span class="kind kind-{{ entry.type }}">{{ entry.type|upper }}</span></td>
+        <td class="mono">{{ entry.event }}</td>
+        <td class="dim">{{ entry.source|or_dash }}</td>
+        <td>{{ untrusted(entry.process) }}</td>
+        <td>{{ untrusted(entry.user) }}</td>
+        <td>{{ untrusted(entry.src_ip) }}</td>
+        <td>{% if entry.mitre %}{{ mitre_chip(entry.mitre) }}{% else %}<span class="dim">-</span>{% endif %}</td>
+        <td>{% if entry.severity %}{{ severity_badge(entry.severity) }}{% else %}<span class="dim">-</span>{% endif %}</td>
+        <td class="cell-wide">{{ untrusted(entry.evidence, "untrusted") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}{{ empty("No timeline entries.") }}{% endif %}
+</section>
+
+<div class="grid-2">
+  <section class="panel" id="process">
+    <header class="panel-head"><h2>Process tree</h2></header>
+    {% if process_tree.available %}
+      {% if process_tree.incomplete %}
+      <p class="warn-note">Lineage is <strong>partial</strong>. Processes marked <em>not observed</em> were named by a child's telemetry (its <span class="mono">ppid</span> and parent name) but were never themselves seen by a sensor. Nothing above them is known.</p>
+      {% endif %}
+      <ul class="tree">
+        {% macro process_node(node) %}
+        <li>
+          <div class="proc {{ 'proc-unobserved' if not node.observed }}">
+            <span class="proc-name mono">{{ node.process|or_dash }}</span>
+            <span class="proc-pid mono dim">pid {{ node.pid|or_dash }}</span>
+            {% if node.user %}<span class="proc-user dim">user {{ node.user }}</span>{% endif %}
+            {% if not node.observed %}<span class="chip chip-warn">not observed</span>{% endif %}
+            {% if node.command_line %}<div class="proc-cmd mono untrusted">{{ node.command_line }}</div>{% endif %}
+            {% if node.executable %}<div class="proc-exe mono dim">{{ node.executable }}</div>{% endif %}
+          </div>
+          {% if node.children %}<ul>{% for child in node.children %}{{ process_node(child) }}{% endfor %}</ul>{% endif %}
+        </li>
+        {% endmacro %}
+        {% for root in process_tree.roots %}{{ process_node(root) }}{% endfor %}
+      </ul>
+      <p class="panel-note">{{ process_tree.process_count }} observed process(es). Command lines are shown as text and are never executed.</p>
+    {% else %}
+      {{ empty(process_tree.reason) }}
+    {% endif %}
+  </section>
+
+  <section class="panel" id="network">
+    <header class="panel-head"><h2>Network telemetry</h2></header>
+    {% if network.available %}
+    <table class="table table-dense">
+      <thead><tr><th>Time</th><th>Process</th><th>PID</th><th>User</th><th>Source</th><th>Destination</th><th>Proto</th><th>Direction</th></tr></thead>
+      <tbody>
+      {% for connection in network.connections %}
+        <tr>
+          <td class="mono" title="{{ connection.timestamp }}">{{ connection.timestamp|short_time }}</td>
+          <td>{{ untrusted(connection.process) }}</td>
+          <td class="mono">{{ connection.pid|or_dash }}</td>
+          <td>{{ untrusted(connection.user) }}</td>
+          <td class="mono">{{ connection.source_ip|or_dash }}{% if connection.source_port %}:{{ connection.source_port }}{% endif %}</td>
+          <td class="mono">{{ connection.destination_ip|or_dash }}{% if connection.destination_port %}:{{ connection.destination_port }}{% endif %}</td>
+          <td class="mono">{{ connection.protocol|or_dash }}</td>
+          <td class="dim">{{ connection.direction|or_dash }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="panel-note">Connection metadata only. SentinelForge never captures packet payloads.</p>
+    {% else %}{{ empty(network.reason) }}{% endif %}
+  </section>
+</div>
+
+<section class="panel" id="mitre">
+  <header class="panel-head"><h2>MITRE ATT&amp;CK</h2>
+    <span class="dim">mapped by the detection rules, not by this page</span></header>
+  {% if mitre %}
+  <table class="table">
+    <thead><tr><th>Technique</th><th>Name</th><th>Tactic</th><th>Alerts</th><th>Rules</th><th>First seen</th><th>Last seen</th></tr></thead>
+    <tbody>
+    {% for item in mitre %}
+      <tr>
+        <td class="mono">{{ item.technique_id }}</td>
+        <td>{{ item.technique }}</td>
+        <td class="dim">{{ item.tactic|or_dash }}</td>
+        <td class="mono">{{ item.alert_count }}</td>
+        <td class="mono dim">{{ item.rule_ids|join(", ") }}</td>
+        <td class="mono dim">{{ item.first_seen|short_date }}</td>
+        <td class="mono dim">{{ item.last_seen|short_date }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}{{ empty("No ATT&CK mappings on this incident's alerts.") }}{% endif %}
+</section>
+
+<section class="panel panel-ai" id="ai">
+  <header class="panel-head"><h2>AI SOC analyst</h2>
+    {% if ai.available and ai.provenance.is_mock %}<span class="chip chip-warn">MOCK PROVIDER &mdash; synthetic analysis</span>{% endif %}
+  </header>
+
+  <div class="verdicts">
+    <div class="verdict verdict-deterministic">
+      <span class="verdict-label">DETERMINISTIC DETECTION</span>
+      <span class="verdict-value">{{ severity_badge(incident.severity) }}</span>
+      <span class="verdict-note">risk {{ incident.risk_score }}/100 &middot; rules: {{ incident.rule_ids|join(", ")|or_dash }}</span>
+      <span class="verdict-source">Source of truth. Produced by deterministic rules and correlation.</span>
+    </div>
+    <div class="verdict verdict-ai">
+      <span class="verdict-label">AI ANALYSIS</span>
+      {% if ai.available %}
+      <span class="verdict-value">{{ severity_badge(ai.severity_assessment) }}</span>
+      <span class="verdict-note">assessment: {{ ai.assessment|replace("_", " ")|upper }} &middot; confidence {{ (ai.confidence * 100)|round|int }}%</span>
+      <span class="verdict-source">Advisory only. Does not change the score or severity above.</span>
+      {% else %}
+      <span class="verdict-value dim">unavailable</span>
+      <span class="verdict-note">{{ ai.reason }}</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if ai.available and ai.severity_disagreement %}
+  <p class="disagreement"><strong>Severity disagreement.</strong>
+    Deterministic severity is <strong>{{ ai.deterministic_severity|upper }}</strong> (risk {{ ai.deterministic_score }});
+    the AI assessed <strong>{{ ai.severity_assessment|upper }}</strong>. The deterministic result stands &mdash; both are recorded for review.</p>
+  {% endif %}
+
+  {% if ai.available %}
+  <div class="ai-grid">
+    <div class="ai-block">
+      <h3>Summary <span class="tag">AI-generated</span></h3>
+      <p class="untrusted">{{ ai.summary }}</p>
+      <p class="dim mono">attack stage: {{ ai.attack_stage|replace("_", " ") }}</p>
+    </div>
+
+    <div class="ai-block">
+      <h3>Key evidence <span class="tag tag-observed">observed</span></h3>
+      {% if ai.key_evidence %}
+      <ul class="ai-list">
+        {% for item in ai.key_evidence %}
+        <li><span class="untrusted">{{ item.observation }}</span>
+          {% if item.significance %}<div class="ai-inference">may indicate: <span class="untrusted">{{ item.significance }}</span></div>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}{{ empty("None listed.") }}{% endif %}
+    </div>
+
+    <div class="ai-block">
+      <h3>Possible benign explanations <span class="tag">requires verification</span></h3>
+      {% if ai.false_positive_indicators %}
+      <ul class="ai-list">{% for item in ai.false_positive_indicators %}<li class="untrusted">{{ item }}</li>{% endfor %}</ul>
+      {% else %}{{ empty("None listed.") }}{% endif %}
+    </div>
+
+    <div class="ai-block">
+      <h3>Recommended investigation</h3>
+      {% if ai.investigation_steps %}
+      <ol class="ai-list">{% for step in ai.investigation_steps %}<li class="untrusted">{{ step }}</li>{% endfor %}</ol>
+      {% else %}{{ empty("None listed.") }}{% endif %}
+    </div>
+
+    <div class="ai-block">
+      <h3>Recommended actions <span class="tag tag-warn">not executed</span></h3>
+      {% if ai.recommended_actions %}
+      <ul class="ai-list">
+        {% for action in ai.recommended_actions %}
+        <li><span class="chip chip-priority chip-{{ action.priority }}">{{ action.priority|upper }}</span>
+          <span class="mono untrusted">{{ action.action }}</span>
+          <div class="dim untrusted">{{ action.reason }}</div></li>
+        {% endfor %}
+      </ul>
+      <p class="panel-note"><strong>Advisory text, not a request.</strong> These sentences were written by a
+        language model and are displayed as text. They cannot start a response action: the response panel below
+        is driven only by an analyst, and every action there is validated, approved and audited independently.
+        Even a recommendation that reads like a command is never executed.</p>
+      {% else %}{{ empty("None listed.") }}{% endif %}
+    </div>
+
+    <div class="ai-block">
+      <h3>ATT&amp;CK reading</h3>
+      {% if ai.mitre_analysis %}
+      <ul class="ai-list">
+        {% for item in ai.mitre_analysis %}
+        <li><span class="mono">{{ item.technique_id }}</span> {{ item.technique }}
+          <span class="chip chip-quiet">{{ item.relevance }}</span>
+          <div class="dim untrusted">{{ item.rationale }}</div></li>
+        {% endfor %}
+      </ul>
+      {% else %}{{ empty("None listed.") }}{% endif %}
+    </div>
+  </div>
+
+  <details class="ai-reasoning">
+    <summary>Reasoning and provenance</summary>
+    <p class="untrusted">{{ ai.reasoning }}</p>
+    <dl class="facts">
+      <div><dt>Provider</dt><dd class="mono">{{ ai.provenance.provider|or_dash }}{% if ai.provenance.is_mock %} (mock){% endif %}</dd></div>
+      <div><dt>Model</dt><dd class="mono">{{ ai.provenance.model|or_dash }}</dd></div>
+      <div><dt>Analyzed at</dt><dd class="mono">{{ ai.provenance.analyzed_at|or_dash }}</dd></div>
+      <div><dt>Incident version</dt><dd class="mono">{{ ai.provenance.incident_version|or_dash }}</dd></div>
+      <div><dt>Prompt / schema</dt><dd class="mono">v{{ ai.provenance.prompt_version }} / v{{ ai.provenance.schema_version }}</dd></div>
+      <div><dt>Cached</dt><dd class="mono">{{ ai.provenance.cached }}</dd></div>
+    </dl>
+    {% if ai.provenance.truncated %}
+    <p class="warn-note">The provider did not see the complete incident:
+      <ul class="ai-list">{% for note in ai.provenance.truncated %}<li>{{ note }}</li>{% endfor %}</ul></p>
+    {% endif %}
+  </details>
+  {% elif ai.status == "failed" %}
+  <p class="warn-note">The last AI analysis failed: <span class="untrusted">{{ ai.error }}</span>.
+    The incident above is unaffected &mdash; detection and correlation do not depend on the AI layer.</p>
+  {% else %}
+  <p class="empty">{{ ai.reason }}</p>
+  {% endif %}
+</section>
+
+
+<section class="panel panel-response" id="response">
+  <header class="panel-head"><h2>Response</h2>
+    <span class="dim">containment actions for this incident &mdash; requested by you, approved by you, audited</span>
+  </header>
+
+  {% if not response.available %}
+  <p class="warn-note">{{ response.reason }}</p>
+  {% else %}
+  <p class="panel-note">
+    Nothing here runs on its own. Each action is <strong>previewed</strong>, then <strong>requested</strong>,
+    then <strong>approved</strong> in a separate step, then <strong>executed</strong> in another, then
+    <strong>verified</strong> against the system and written to an append-only audit trail.
+    AI output, log contents and telemetry can never trigger any of it.
+  </p>
+
+  <div class="grid-2">
+    <div class="response-form" id="response-form"
+         data-incident-id="{{ incident.incident_id }}"
+         data-api="{{ url_for('response_api.capabilities')|replace('/capabilities', '') }}">
+      <h3>Request an action</h3>
+      <label for="response-action-type">Action</label>
+      <select id="response-action-type">
+        {% for entry in response.capabilities.actions %}
+        <option value="{{ entry.action_type }}" {{ 'disabled' if not entry.available }}>
+          {{ entry.label }}{% if not entry.available %} (unavailable){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+
+      <label for="response-target">Target</label>
+      <input type="text" id="response-target" list="response-target-suggestions"
+             placeholder="IP address, PID or session id" autocomplete="off" spellcheck="false">
+      <datalist id="response-target-suggestions">
+        {% for address in response_targets.source_ips %}<option value="{{ address }}"></option>{% endfor %}
+        {% for process in response_targets.processes %}<option value="{{ process.pid }}"></option>{% endfor %}
+      </datalist>
+
+      {% if response_targets.source_ips or response_targets.processes %}
+      <div class="target-hints">
+        <span class="dim">From this incident's evidence:</span>
+        {% for address in response_targets.source_ips %}
+        <button type="button" class="chip chip-target" data-target-value="{{ address }}" data-target-type="block_ip">{{ address }}</button>
+        {% endfor %}
+        {% for process in response_targets.processes %}
+        <button type="button" class="chip chip-target" data-target-value="{{ process.pid }}" data-target-type="kill_process"
+                title="{{ process.process }} {{ process.command_line }}">pid {{ process.pid }}{% if process.process %} ({{ process.process }}){% endif %}</button>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <label for="response-ttl">Duration (seconds, blocks only)</label>
+      <input type="number" id="response-ttl" min="30" max="86400" step="30" value="900"
+             placeholder="leave empty for no expiry">
+
+      <label for="response-reason">Reason (recorded in the audit trail)</label>
+      <textarea id="response-reason" rows="2" placeholder="why this containment is justified"></textarea>
+
+      <label class="checkbox"><input type="checkbox" id="response-dry-run" checked>
+        Dry run &mdash; show what would happen and record it, change nothing</label>
+
+      <div class="response-buttons">
+        <button type="button" class="btn btn-preview" id="response-preview-button">Preview</button>
+      </div>
+      <p class="dim">Preview changes nothing and records nothing. You will be asked to confirm before anything is requested.</p>
+    </div>
+
+    <div class="response-preview" id="response-preview" hidden aria-live="polite">
+      <h3>Response action</h3>
+      <dl class="facts">
+        <div><dt>Action</dt><dd id="preview-action" class="mono"></dd></div>
+        <div><dt>Target</dt><dd id="preview-target" class="mono untrusted"></dd></div>
+        <div><dt>Reason</dt><dd id="preview-reason" class="untrusted"></dd></div>
+        <div><dt>Effect</dt><dd id="preview-effect"></dd></div>
+        <div><dt>Duration</dt><dd id="preview-duration" class="mono"></dd></div>
+        <div><dt>Rollback</dt><dd id="preview-rollback"></dd></div>
+        <div><dt>Privilege</dt><dd id="preview-privilege"></dd></div>
+        <div><dt>Policy</dt><dd id="preview-policy"></dd></div>
+      </dl>
+      <ul class="ai-list" id="preview-warnings"></ul>
+      <p class="confirm-note" id="preview-mode"></p>
+      <div class="response-buttons">
+        <button type="button" class="btn btn-quiet" id="response-cancel-button">Cancel</button>
+        <button type="button" class="btn btn-approve" id="response-confirm-button">Request this action</button>
+      </div>
+      <p class="dim">Requesting records the action for approval. It does not carry it out.</p>
+    </div>
+  </div>
+
+  <p class="response-message" id="response-message" role="status" hidden></p>
+
+  <h3 class="response-subhead">Response history</h3>
+  {{ history_table(response.history, show_incident=False) }}
+
+  <details class="ai-reasoning">
+    <summary>What this host can actually do</summary>
+    {{ capability_list(response.capabilities) }}
+    <p class="panel-note">An action is only offered when its backend is present. Where privileges are missing,
+      SentinelForge says so and stops &mdash; it never invokes sudo and never asks for a password.</p>
+  </details>
+  {% endif %}
+</section>
+
+<section class="panel" id="evidence">
+  <header class="panel-head"><h2>Alerts and evidence</h2></header>
+  {% for alert in alerts %}
+  <details class="evidence-block">
+    <summary>
+      {{ severity_badge(alert.severity) }}
+      <span class="mono">{{ alert.alert_id }}</span>
+      <span class="mono">{{ alert.rule_id }}</span>
+      <span class="untrusted">{{ alert.description }}</span>
+      <span class="dim mono">risk {{ alert.risk_score }} &middot; {{ alert.event_count }} event(s)</span>
+    </summary>
+    {% if alert.risk_explanation %}
+    <ul class="reasons">{% for line in alert.risk_explanation %}<li class="mono">{{ line }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if alert.evidence %}
+    <table class="table table-dense">
+      <thead><tr><th>Time</th><th>Type</th><th>Source</th><th>User</th><th>IP</th><th>Process</th><th>Message</th></tr></thead>
+      <tbody>
+      {% for event in alert.evidence %}
+        <tr>
+          <td class="mono" title="{{ event.timestamp }}">{{ event.timestamp|short_time }}</td>
+          <td class="mono dim">{{ event.event_type }}</td>
+          <td class="dim">{{ event.source }}</td>
+          <td>{{ untrusted(event.user) }}</td>
+          <td>{{ untrusted(event.src_ip) }}</td>
+          <td>{{ untrusted(event.process) }}</td>
+          <td class="cell-wide">{{ untrusted(event.message, "untrusted") }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if alert.evidence_truncated %}<p class="panel-note">Evidence list truncated for display.</p>{% endif %}
+    {% endif %}
+  </details>
+  {% else %}
+  {{ empty("No alerts on this incident.") }}
+  {% endfor %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if response.available %}<script src="{{ url_for('static', filename='js/response.js') }}" defer></script>{% endif %}
+{% endblock %}

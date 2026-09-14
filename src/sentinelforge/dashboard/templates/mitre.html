@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "_macros.html" import severity_badge, empty %}
+{% block title %}MITRE ATT&amp;CK &mdash; SentinelForge{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <header class="panel-head">
+    <h2>MITRE ATT&amp;CK coverage</h2>
+    <span class="dim">{{ techniques|length }} technique(s) across {{ incident_count }} incident(s)</span>
+  </header>
+  <p class="panel-note">Every mapping here comes from a detection rule that actually fired (Phase 2's validated
+    ATT&amp;CK catalogue). This page aggregates; it never assigns a technique of its own.</p>
+
+  {% if techniques %}
+  <table class="table">
+    <thead><tr><th>Technique</th><th>Name</th><th>Tactic</th><th>Alerts</th><th>Incidents</th><th>Highest severity</th><th>Rules</th><th>First seen</th><th>Last seen</th></tr></thead>
+    <tbody>
+    {% for item in techniques %}
+      <tr>
+        <td class="mono">{{ item.technique_id }}</td>
+        <td>{{ item.technique }}{% if item.parent_technique and item.parent_technique_id != item.technique_id %}
+            <span class="dim">(sub-technique of {{ item.parent_technique_id }} {{ item.parent_technique }})</span>{% endif %}</td>
+        <td class="dim">{{ item.tactic|or_dash }}</td>
+        <td class="mono">{{ item.alert_count }}</td>
+        <td class="mono">
+          {% for incident_id in item.incident_ids[:4] %}<a class="mono" href="{{ url_for('pages.incident_detail', incident_id=incident_id) }}">{{ incident_id }}</a>{{ ", " if not loop.last }}{% endfor %}
+          {% if item.incident_ids|length > 4 %}<span class="dim">+{{ item.incident_ids|length - 4 }}</span>{% endif %}
+        </td>
+        <td>{{ severity_badge(item.highest_severity) }}</td>
+        <td class="mono dim">{{ item.rule_ids|join(", ") }}</td>
+        <td class="mono dim">{{ item.first_seen|short_date }}</td>
+        <td class="mono dim">{{ item.last_seen|short_date }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}{{ empty("No techniques observed yet: no alert with an ATT&CK mapping has fired.") }}{% endif %}
+</section>
+{% endblock %}

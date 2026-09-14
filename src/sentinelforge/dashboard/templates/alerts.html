@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% from "_macros.html" import severity_badge, mitre_chip, incident_link, empty, untrusted %}
+{% block title %}Alerts &mdash; SentinelForge{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <header class="panel-head">
+    <h2>Security alerts</h2>
+    <span class="dim">{{ total }} matching &middot; showing page {{ page }}</span>
+  </header>
+
+  <form class="filters" method="get" action="{{ url_for('pages.alerts') }}">
+    <label>Severity
+      <select name="severity">
+        <option value="">any</option>
+        {% for severity in severities %}
+        <option value="{{ severity }}" {{ 'selected' if filters.severity == severity }}>{{ severity }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Rule
+      <select name="rule">
+        <option value="">any</option>
+        {% for rule in rules %}
+        <option value="{{ rule }}" {{ 'selected' if filters.rule == rule }}>{{ rule }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Host
+      <select name="host">
+        <option value="">any</option>
+        {% for host in hosts %}
+        <option value="{{ host }}" {{ 'selected' if filters.host == host }}>{{ host }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Source IP <input type="text" name="source_ip" value="{{ filters.source_ip }}" placeholder="192.0.2.10" size="14"></label>
+    <label>Search <input type="search" name="q" value="{{ filters.q }}" placeholder="user, rule, message" size="20"></label>
+    <button class="btn" type="submit">Filter</button>
+    <a class="btn btn-quiet" href="{{ url_for('pages.alerts') }}">Reset</a>
+  </form>
+
+  {% if alerts %}
+  <table class="table table-dense">
+    <thead>
+      <tr><th>Time</th><th>Severity</th><th>Risk</th><th>Rule</th><th>ATT&amp;CK</th><th>Host</th><th>Source IP</th><th>User</th><th>Description</th><th>Incident</th></tr>
+    </thead>
+    <tbody>
+    {% for alert in alerts %}
+      <tr>
+        <td class="mono dim" title="{{ alert.timestamp }}">{{ alert.timestamp|short_date }}</td>
+        <td>{{ severity_badge(alert.severity) }}</td>
+        <td class="mono">{{ alert.risk_score }}</td>
+        <td class="mono">{{ alert.rule_id }}</td>
+        <td>{{ mitre_chip(alert.mitre) }}</td>
+        <td>{{ untrusted(alert.host) }}</td>
+        <td>{{ untrusted(alert.source_ip) }}</td>
+        <td>{{ untrusted(alert.user) }}</td>
+        <td class="cell-wide">{{ untrusted(alert.description, "untrusted") }}</td>
+        <td>{{ incident_link(alert.incident_id) if alert.incident_id else "-" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <nav class="pager">
+    {% if page > 1 %}<a class="btn btn-quiet" href="{{ url_for('pages.alerts', **dict(filters, page=page-1)) }}">&larr; Previous</a>{% endif %}
+    <span class="dim">{{ (page - 1) * page_size + 1 }}&ndash;{{ (page - 1) * page_size + alerts|length }} of {{ total }}</span>
+    {% if (page * page_size) < total %}<a class="btn btn-quiet" href="{{ url_for('pages.alerts', **dict(filters, page=page+1)) }}">Next &rarr;</a>{% endif %}
+  </nav>
+  {% else %}
+  {{ empty("No alerts match these filters. Alerts are read from stored incidents.") }}
+  {% endif %}
+</section>
+{% endblock %}

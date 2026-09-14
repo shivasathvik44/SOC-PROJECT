@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "_macros.html" import empty %}
+{% block title %}Live events &mdash; SentinelForge{% endblock %}
+
+{% block content %}
+<section class="panel panel-wide">
+  <header class="panel-head">
+    <h2>Live activity</h2>
+    <div class="panel-actions">
+      <button type="button" id="live-pause" class="btn" aria-pressed="false">Pause</button>
+      <button type="button" id="live-clear" class="btn btn-quiet">Clear</button>
+      <label class="inline-filter">Filter <input type="search" id="live-filter" placeholder="rule, process, user" size="18"></label>
+    </div>
+  </header>
+
+  <p class="panel-note">
+    Streamed over Server-Sent Events from the in-process bus. Events and alerts reach this console when the
+    dashboard is following the pipeline's JSON Lines output; incidents appear as soon as they are written to the
+    incident store.
+    {% if watching.events_file %}<br>Following events: <span class="mono">{{ watching.events_file }}</span>{% endif %}
+    {% if watching.alerts_file %}<br>Following alerts: <span class="mono">{{ watching.alerts_file }}</span>{% endif %}
+    {% if not watching.events_file and not watching.alerts_file %}
+    <br><span class="dim">No JSON Lines files are being followed. Start the dashboard with
+      <span class="mono">--watch-events events.jsonl --watch-alerts alerts.jsonl</span> to see live events and alerts,
+      or use <span class="mono">--demo</span>.</span>
+    {% endif %}
+  </p>
+
+  <ol class="feed feed-full" id="live-feed" data-empty="Waiting for activity."></ol>
+  <p class="panel-note"><span id="live-count">0</span> item(s) in view &middot; the console keeps only a recent window &middot; <span id="live-dropped"></span></p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/live.js') }}" defer></script>
+{% endblock %}

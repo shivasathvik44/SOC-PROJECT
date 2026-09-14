@@ -1,0 +1,75 @@
+{# Shared response fragments.  Everything that touches telemetry or operator
+   text goes through Jinja's autoescaping here, exactly like the rest of the
+   console: a target, a command line recorded from /proc, or a policy reason is
+   rendered as text and never as markup. #}
+{% from "_macros.html" import action_status, rollback_badge, empty, untrusted %}
+
+{% macro action_row(action, show_incident=True) -%}
+<tr class="action-row action-{{ action.status }}" data-action-id="{{ action.action_id }}">
+  <td class="mono">{{ action.action_id }}</td>
+  {% if show_incident %}<td class="mono">{% if action.incident_id %}<a href="{{ url_for('pages.incident_detail', incident_id=action.incident_id) }}">{{ action.incident_id }}</a>{% else %}<span class="dim">-</span>{% endif %}</td>{% endif %}
+  <td class="mono">{{ action.action_type }}</td>
+  <td>{{ untrusted(action.target) }}</td>
+  <td>{{ action_status(action.status) }}{% if action.dry_run %} <span class="chip chip-quiet" title="a simulation: nothing was changed">DRY RUN</span>{% endif %}</td>
+  <td class="dim mono">{{ action.requested_by }}{% if action.approved_by %} / {{ action.approved_by }}{% endif %}</td>
+  <td class="mono dim" title="{{ action.requested_at }}">{{ action.requested_at|short_time }}</td>
+  <td>
+    {% if action.ttl_seconds %}<span class="mono" title="expires {{ action.expires_at }}">{{ action.ttl_seconds }}s</span>{% else %}<span class="dim">-</span>{% endif %}
+  </td>
+  <td>{{ rollback_badge(action.rollback_available) }}</td>
+  <td class="cell-wide">
+    {% if action.error %}<span class="untrusted err">{{ action.error }}</span>
+    {% elif action.verification %}<span class="untrusted dim">{{ action.verification }}</span>
+    {% else %}<span class="dim">-</span>{% endif %}
+  </td>
+  <td class="action-controls">
+    {% if action.awaiting_approval %}
+      <button type="button" class="btn btn-approve" data-response-action="approve" data-action-id="{{ action.action_id }}">Approve</button>
+      <button type="button" class="btn btn-quiet" data-response-action="reject" data-action-id="{{ action.action_id }}">Reject</button>
+    {% elif action.approved_not_executed %}
+      <button type="button" class="btn btn-execute" data-response-action="execute" data-action-id="{{ action.action_id }}">Execute</button>
+      <button type="button" class="btn btn-quiet" data-response-action="cancel" data-action-id="{{ action.action_id }}">Cancel</button>
+    {% elif action.status == "completed" and action.rollback_available %}
+      <button type="button" class="btn btn-quiet" data-response-action="rollback" data-action-id="{{ action.action_id }}">Roll back</button>
+    {% else %}
+      <span class="dim">-</span>
+    {% endif %}
+  </td>
+</tr>
+{%- endmacro %}
+
+{% macro history_table(history, show_incident=True) -%}
+{% if history.actions %}
+<table class="table table-dense actions-table">
+  <thead><tr>
+    <th>Action</th>{% if show_incident %}<th>Incident</th>{% endif %}<th>Type</th><th>Target</th>
+    <th>Status</th><th>Requested / approved by</th><th>Requested</th><th>TTL</th>
+    <th>Rollback</th><th>Result</th><th>Analyst decision</th>
+  </tr></thead>
+  <tbody>
+  {% for action in history.actions %}{{ action_row(action, show_incident) }}{% endfor %}
+  </tbody>
+</table>
+<p class="panel-note">{{ history.total }} action(s): {{ history.awaiting_approval }} awaiting approval,
+  {{ history.completed }} completed, {{ history.failed }} failed, {{ history.dry_runs }} dry run(s).
+  Every state change above is recorded in the append-only audit trail.</p>
+{% else %}
+{{ empty("No response actions have been recorded.") }}
+{% endif %}
+{%- endmacro %}
+
+{% macro capability_list(capabilities) -%}
+<ul class="capability-list">
+  {% for entry in capabilities.actions %}
+  <li class="capability {{ 'capability-off' if not entry.available }}">
+    <span class="mono">{{ entry.action_type }}</span>
+    <span class="chip {{ 'chip-ok' if entry.available else 'chip-warn' }}">{{ 'AVAILABLE' if entry.available else 'UNAVAILABLE' }}</span>
+    <span class="dim">backend: {{ entry.backend }}</span>
+    {% if entry.requires_privilege %}<span class="chip chip-quiet" title="{{ 'this process has the privileges' if entry.privilege_satisfied else 'this process does not have the privileges' }}">{{ 'ROOT OK' if entry.privilege_satisfied else 'NEEDS ROOT' }}</span>{% endif %}
+    {{ rollback_badge(entry.reversible) }}
+    {% if entry.reason %}<div class="dim capability-reason">{{ entry.reason }}</div>{% endif %}
+    {% if entry.remedy %}<div class="dim capability-reason">{{ entry.remedy }}</div>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{%- endmacro %}

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinelforge"
+version = "0.7.0"
+description = "SentinelForge: Linux log collection, event normalization, threat detection, incident correlation, eBPF telemetry, an AI SOC analyst, a local SOC dashboard and a human-approved response engine"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["security", "soc", "logs", "linux", "systemd", "journald", "ebpf", "llm", "dashboard", "incident-response", "containment", "firewalld"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+# No runtime dependencies: SentinelForge runs on the standard library alone.
+# The AI layer (Phase 5) uses the official OpenAI SDK when it is installed and
+# falls back to a small urllib transport when it is not - see
+# src/sentinelforge/ai/providers/openai.py.
+dependencies = []
+
+[project.optional-dependencies]
+# Flask is the only web dependency: it provides routing, Jinja2 (whose
+# autoescaping is what keeps untrusted telemetry out of the DOM) and a local
+# development server.  The dashboard streams updates with plain Server-Sent
+# Events, so no async stack, no websocket library and no frontend build system
+# is required.
+dashboard = ["flask>=3.0"]
+llm = ["openai>=1.0"]
+dev = ["pytest>=7.0", "flask>=3.0"]
+
+[project.scripts]
+sentinelforge = "sentinelforge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "_macros.html" import empty %}
+{% block title %}Sensors &mdash; SentinelForge{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <header class="panel-head"><h2>Telemetry sources</h2></header>
+  <p class="panel-note">Availability is probed live. A source that cannot run is shown as offline with the reason the
+    sensor registry gave &mdash; the dashboard never presents telemetry it is not receiving.</p>
+  <table class="table">
+    <thead><tr><th>Source</th><th>State</th><th>Description</th><th>Detail</th><th>What you can do</th></tr></thead>
+    <tbody>
+    {% for sensor in sensors %}
+      <tr>
+        <td class="mono">{{ sensor.name }}</td>
+        <td><span class="state state-{{ 'on' if sensor.available else 'off' }}">{{ sensor.state|upper }}</span></td>
+        <td class="dim">{{ sensor.description|or_dash }}</td>
+        <td class="dim cell-wide">{{ sensor.reason|or_dash }}</td>
+        <td class="dim cell-wide mono">{{ sensor.remedy|or_dash }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <header class="panel-head"><h2>Dashboard monitors</h2></header>
+  {% if monitors %}
+  <table class="table">
+    <thead><tr><th>Monitor</th><th>Running</th><th>Errors</th></tr></thead>
+    <tbody>
+    {% for monitor in monitors %}
+      <tr><td class="mono">{{ monitor.name }}</td>
+        <td><span class="state state-{{ 'on' if monitor.alive else 'off' }}">{{ 'RUNNING' if monitor.alive else 'STOPPED' }}</span></td>
+        <td class="mono">{{ monitor.errors }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}{{ empty("No background monitors are running in this process.") }}{% endif %}
+</section>
+
+<section class="panel">
+  <header class="panel-head"><h2>This console</h2></header>
+  <dl class="facts">
+    <div><dt>Bind address</dt><dd class="mono">{{ config.bind }}</dd></div>
+    <div><dt>Incident database</dt><dd class="mono">{{ config.database }}</dd></div>
+    <div><dt>Events file</dt><dd class="mono">{{ config.events_file|or_dash }}</dd></div>
+    <div><dt>Alerts file</dt><dd class="mono">{{ config.alerts_file|or_dash }}</dd></div>
+    <div><dt>Store poll interval</dt><dd class="mono">{{ config.poll_interval }}s</dd></div>
+    <div><dt>Demo mode</dt><dd class="mono">{{ config.demo }}</dd></div>
+  </dl>
+</section>
+{% endblock %}

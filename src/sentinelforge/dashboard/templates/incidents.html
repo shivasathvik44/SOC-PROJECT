@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% from "_macros.html" import severity_badge, status_badge, risk_bar, incident_link, empty, untrusted %}
+{% block title %}Incidents &mdash; SentinelForge{% endblock %}
+
+{% macro sort_link(field, label) -%}
+  {%- set order = 'asc' if (filters.sort == field and filters.order == 'desc') else 'desc' -%}
+  <a class="sort {{ 'sort-active' if filters.sort == field }}" href="{{ url_for('pages.incidents', **dict(filters, sort=field, order=order)) }}">{{ label }}{% if filters.sort == field %}<span aria-hidden="true">{{ '▼' if filters.order == 'desc' else '▲' }}</span>{% endif %}</a>
+{%- endmacro %}
+
+{% block content %}
+<section class="panel">
+  <header class="panel-head">
+    <h2>Incidents</h2>
+    <span class="dim">{{ total }} matching &middot; page {{ page }}</span>
+  </header>
+
+  <form class="filters" method="get" action="{{ url_for('pages.incidents') }}">
+    <label>Severity
+      <select name="severity">
+        <option value="">any</option>
+        {% for severity in severities %}
+        <option value="{{ severity }}" {{ 'selected' if filters.severity == severity }}>{{ severity }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Status
+      <select name="status">
+        <option value="">any</option>
+        {% for status in statuses %}
+        <option value="{{ status }}" {{ 'selected' if filters.status == status }}>{{ status }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Host
+      <select name="host">
+        <option value="">any</option>
+        {% for host in hosts %}
+        <option value="{{ host }}" {{ 'selected' if filters.host == host }}>{{ host }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Source IP <input type="text" name="source_ip" value="{{ filters.source_ip }}" size="14" placeholder="192.0.2.10"></label>
+    <label>ATT&amp;CK <input type="text" name="technique" value="{{ filters.technique }}" size="10" placeholder="T1110"></label>
+    <label>Min risk <input type="number" name="min_risk" value="{{ filters.min_risk }}" min="0" max="100" size="4"></label>
+    <label>Search <input type="search" name="q" value="{{ filters.q }}" size="18" placeholder="title, host, user"></label>
+    <input type="hidden" name="sort" value="{{ filters.sort }}">
+    <input type="hidden" name="order" value="{{ filters.order }}">
+    <button class="btn" type="submit">Filter</button>
+    <a class="btn btn-quiet" href="{{ url_for('pages.incidents') }}">Reset</a>
+  </form>
+
+  {% if incidents %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>{{ sort_link('incident_id', 'ID') }}</th>
+        <th>{{ sort_link('severity', 'Severity') }}</th>
+        <th>{{ sort_link('risk_score', 'Risk') }}</th>
+        <th>{{ sort_link('status', 'Status') }}</th>
+        <th>Title</th>
+        <th>{{ sort_link('host', 'Host') }}</th>
+        <th>Source IPs</th>
+        <th>Users</th>
+        <th>Alerts</th>
+        <th>ATT&amp;CK</th>
+        <th>{{ sort_link('first_seen', 'First seen') }}</th>
+        <th>{{ sort_link('last_seen', 'Last seen') }}</th>
+        <th>AI</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for incident in incidents %}
+      <tr>
+        <td>{{ incident_link(incident.incident_id) }}</td>
+        <td>{{ severity_badge(incident.severity) }}</td>
+        <td>{{ risk_bar(incident.risk_score) }}</td>
+        <td>{{ status_badge(incident.status) }}</td>
+        <td class="cell-wide">{{ untrusted(incident.title, "untrusted") }}</td>
+        <td>{{ untrusted(incident.host) }}</td>
+        <td>{{ untrusted(incident.source_ips|join(", ")) }}</td>
+        <td>{{ untrusted(incident.users|join(", ")) }}</td>
+        <td class="mono">{{ incident.alert_count }}</td>
+        <td class="mono dim">{{ incident.techniques|unique|join(", ") if incident.techniques else "-" }}</td>
+        <td class="mono dim">{{ incident.first_seen|short_date }}</td>
+        <td class="mono dim">{{ incident.last_seen|short_date }}</td>
+        <td>{% if incident.has_ai_analysis %}<span class="chip chip-ai">AI</span>{% else %}<span class="dim">-</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <nav class="pager">
+    {% if page > 1 %}<a class="btn btn-quiet" href="{{ url_for('pages.incidents', **dict(filters, page=page-1)) }}">&larr; Previous</a>{% endif %}
+    <span class="dim">{{ (page - 1) * page_size + 1 }}&ndash;{{ (page - 1) * page_size + incidents|length }} of {{ total }}</span>
+    {% if (page * page_size) < total %}<a class="btn btn-quiet" href="{{ url_for('pages.incidents', **dict(filters, page=page+1)) }}">Next &rarr;</a>{% endif %}
+  </nav>
+  {% else %}
+  {{ empty("No incidents match these filters.") }}
+  {% endif %}
+</section>
+{% endblock %}

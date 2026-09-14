@@ -1,0 +1,64 @@
+{# Reusable fragments.  Everything that touches telemetry goes through Jinja's
+   autoescaping here, so a hostile username or command line is rendered as text
+   in every view that uses these macros. #}
+
+{% macro severity_badge(severity, label=None) -%}
+  {#- Severity is shown with a symbol, a word and a colour, never colour alone:
+      the interface has to work for a colour-blind analyst and in a screenshot. -#}
+  {%- set glyphs = {"critical": "!!", "high": "!", "medium": "=", "low": "-", "info": "."} -%}
+  <span class="sev sev-{{ severity|default('info') }}" title="severity: {{ severity }}">
+    <span class="sev-glyph" aria-hidden="true">{{ glyphs.get(severity, "?") }}</span>
+    <span class="sev-text">{{ label or (severity|default('info'))|upper }}</span>
+  </span>
+{%- endmacro %}
+
+{% macro status_badge(status) -%}
+  <span class="status status-{{ status }}">{{ status|replace("_", " ")|upper }}</span>
+{%- endmacro %}
+
+{% macro risk_bar(score) -%}
+  {%- set value = score|int -%}
+  <span class="risk" title="deterministic risk score: {{ value }}/100">
+    <span class="risk-value">{{ "%3d"|format(value) }}</span>
+    <span class="risk-track"><span class="risk-fill risk-{{ 'critical' if value >= 90 else 'high' if value >= 70 else 'medium' if value >= 40 else 'low' }}" style="width: {{ value }}%"></span></span>
+  </span>
+{%- endmacro %}
+
+{% macro mitre_chip(item) -%}
+  {%- if item -%}
+  <span class="chip chip-mitre" title="{{ item.tactic }} / {{ item.technique }}">
+    <span class="chip-id">{{ item.technique_id }}</span>
+    <span class="chip-name">{{ item.technique }}</span>
+  </span>
+  {%- else -%}
+  <span class="chip chip-none">no ATT&amp;CK mapping</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro incident_link(incident_id) -%}
+  <a class="mono incident-link" href="{{ url_for('pages.incident_detail', incident_id=incident_id) }}">{{ incident_id }}</a>
+{%- endmacro %}
+
+{% macro empty(message) -%}
+  <p class="empty">{{ message }}</p>
+{%- endmacro %}
+
+{% macro untrusted(value, class_name="mono untrusted") -%}
+  {#- Telemetry text.  Autoescaped like everything else; the class only marks it
+      visually as data that came from the monitored host. -#}
+  <span class="{{ class_name }}">{{ value if value not in (None, "") else "-" }}</span>
+{%- endmacro %}
+
+{% macro action_status(status) -%}
+  {#- The approval state has to be readable at a glance, in words as well as
+      colour: "awaiting approval" is the difference between a plan and an act. -#}
+  <span class="astatus astatus-{{ status }}">{{ status|replace("_", " ")|upper }}</span>
+{%- endmacro %}
+
+{% macro rollback_badge(available) -%}
+  {%- if available -%}
+  <span class="chip chip-ok" title="this action can be undone">ROLLBACK AVAILABLE</span>
+  {%- else -%}
+  <span class="chip chip-warn" title="this action cannot be undone">NO ROLLBACK</span>
+  {%- endif -%}
+{%- endmacro %}

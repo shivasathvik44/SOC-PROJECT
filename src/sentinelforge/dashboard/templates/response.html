@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "_macros.html" import empty %}
+{% from "_response.html" import history_table, capability_list %}
+{% block title %}Response &mdash; SentinelForge{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <header class="panel-head"><h2>Response and containment</h2>
+    <span class="dim">every action a human requested, approved and executed on this host</span></header>
+
+  {% if not response.available %}
+  <p class="warn-note">{{ response.reason }}</p>
+  {% else %}
+  <div class="response-guarantees">
+    <div><span class="verdict-label">HUMAN APPROVAL</span><span class="verdict-value">required</span>
+      <span class="verdict-source">Requesting an action never performs it. Approval and execution are separate steps.</span></div>
+    <div><span class="verdict-label">AUTOMATIC EXECUTION</span><span class="verdict-value">never</span>
+      <span class="verdict-source">No detection, correlation or AI result can start a containment action.</span></div>
+    <div><span class="verdict-label">DRY RUN</span><span class="verdict-value">always available</span>
+      <span class="verdict-source">A dry run resolves from a preview and reaches no backend.</span></div>
+    <div><span class="verdict-label">AUDIT</span><span class="verdict-value">append-only</span>
+      <span class="verdict-source">
+        {% if chain %}Hash chain {{ 'verified' if chain.ok else 'BROKEN' }} across {{ chain.checked }} record(s).{% else %}Every request and result is recorded.{% endif %}
+      </span></div>
+  </div>
+  {% endif %}
+</section>
+
+{% if response.available %}
+<section class="panel">
+  <header class="panel-head"><h2>Actions</h2></header>
+  {{ history_table(response.history, show_incident=True) }}
+  <p class="panel-note">To request a new action, open the incident it belongs to &mdash; containment is part of an
+    investigation, not a standalone control panel. From a terminal:
+    <span class="mono">sentinelforge response preview block-ip &lt;address&gt;</span>.</p>
+</section>
+
+<section class="panel">
+  <header class="panel-head"><h2>Capabilities on this host</h2></header>
+  {{ capability_list(response.capabilities) }}
+</section>
+
+<section class="panel">
+  <header class="panel-head"><h2>Audit trail</h2>
+    <span class="dim">append-only; each record is hashed together with the one before it</span></header>
+  {% if audit %}
+  <table class="table table-dense">
+    <thead><tr><th>Time</th><th>Audit</th><th>Event</th><th>Action</th><th>Type</th><th>Target</th>
+      <th>Mode</th><th>Requested by</th><th>Approved by</th><th>Result</th></tr></thead>
+    <tbody>
+    {% for record in audit %}
+      <tr>
+        <td class="mono" title="{{ record.timestamp }}">{{ record.timestamp|short_time }}</td>
+        <td class="mono dim">{{ record.audit_id }}</td>
+        <td><span class="kind kind-{{ record.event }}">{{ record.event|replace("_", " ")|upper }}</span></td>
+        <td class="mono">{{ record.action_id|or_dash }}</td>
+        <td class="mono dim">{{ record.action_type|or_dash }}</td>
+        <td class="mono untrusted">{{ record.target|or_dash }}</td>
+        <td class="mono dim">{{ 'DRY RUN' if record.dry_run else 'REAL' }}</td>
+        <td class="dim">{{ record.requested_by|or_dash }}</td>
+        <td class="dim">{{ record.approved_by|or_dash }}</td>
+        <td class="cell-wide">{% if record.error %}<span class="untrusted err">{{ record.error }}</span>{% else %}<span class="dim">{{ record.execution_status|or_dash }}</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}{{ empty("No audit records yet.") }}{% endif %}
+</section>
+{% endif %}
+{% endblock %}

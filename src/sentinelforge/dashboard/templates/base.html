@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{% block title %}SentinelForge SOC{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/sentinelforge.css') }}">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#x1F6E1;</text></svg>">
+</head>
+<body>
+{% if demo_mode %}
+<div class="demo-banner" role="status">
+  <strong>DEMO / SYNTHETIC DATA</strong>
+  <span>Every incident, alert and event on this screen was generated locally for demonstration. It is not real telemetry, and it is stored in a separate database.</span>
+</div>
+{% endif %}
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">&#9678;</span>
+    <span class="brand-name">SENTINEL<span class="brand-accent">FORGE</span></span>
+    <span class="brand-sub">SOC CONSOLE</span>
+  </div>
+  <nav class="nav" aria-label="Main">
+    <a href="{{ url_for('pages.overview') }}" class="{{ 'active' if nav_active == 'pages.overview' }}">Overview</a>
+    <a href="{{ url_for('pages.alerts') }}" class="{{ 'active' if nav_active == 'pages.alerts' }}">Alerts</a>
+    <a href="{{ url_for('pages.incidents') }}" class="{{ 'active' if nav_active in ('pages.incidents', 'pages.incident_detail') }}">Incidents</a>
+    <a href="{{ url_for('pages.live') }}" class="{{ 'active' if nav_active == 'pages.live' }}">Live Events</a>
+    <a href="{{ url_for('pages.mitre') }}" class="{{ 'active' if nav_active == 'pages.mitre' }}">MITRE ATT&amp;CK</a>
+    <a href="{{ url_for('pages.response') }}" class="{{ 'active' if nav_active == 'pages.response' }}">Response</a>
+    <a href="{{ url_for('pages.sensors') }}" class="{{ 'active' if nav_active == 'pages.sensors' }}">Sensors</a>
+  </nav>
+  <div class="topbar-right">
+    <span id="stream-status" class="stream-status" data-state="connecting">
+      <span class="dot" aria-hidden="true"></span><span class="stream-text">connecting</span>
+    </span>
+    {% if response_enabled %}
+    <span class="readonly readonly-response" title="Detection, correlation and the AI layer are read-only. Containment actions exist, and every one of them needs an explicit human approval.">HUMAN-APPROVED RESPONSE</span>
+    {% else %}
+    <span class="readonly" title="This dashboard process cannot perform response actions.">READ-ONLY</span>
+    {% endif %}
+  </div>
+</header>
+
+<main class="content">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="footer">
+  <span>SentinelForge &mdash; local SOC console. Detection, correlation and scoring are deterministic; the AI layer is advisory.</span>
+  <span class="footer-right">Response actions require explicit human approval; nothing is ever executed automatically, and no AI output can trigger one.</span>
+</footer>
+
+<script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

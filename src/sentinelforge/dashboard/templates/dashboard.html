@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% from "_macros.html" import severity_badge, status_badge, risk_bar, mitre_chip, incident_link, empty, untrusted %}
+{% block title %}SOC Overview &mdash; SentinelForge{% endblock %}
+
+{% block content %}
+<section class="tiles" aria-label="Key figures">
+  <div class="tile">
+    <span class="tile-label">Active incidents</span>
+    <span class="tile-value" id="stat-active">{{ stats.incidents.active }}</span>
+    <span class="tile-note">{{ stats.incidents.total }} stored in total</span>
+  </div>
+  <div class="tile tile-critical">
+    <span class="tile-label">Critical</span>
+    <span class="tile-value" id="stat-critical">{{ stats.incidents.critical }}</span>
+    <span class="tile-note">incidents at critical severity</span>
+  </div>
+  <div class="tile tile-high">
+    <span class="tile-label">High</span>
+    <span class="tile-value" id="stat-high">{{ stats.incidents.high }}</span>
+    <span class="tile-note">incidents at high severity</span>
+  </div>
+  <div class="tile">
+    <span class="tile-label">Alerts seen live</span>
+    <span class="tile-value" id="stat-alerts">{{ stats.live.alerts_created }}</span>
+    <span class="tile-note">since this console started</span>
+  </div>
+  <div class="tile">
+    <span class="tile-label">Events / sec</span>
+    <span class="tile-value" id="stat-eps">{{ stats.live.events_per_second }}</span>
+    <span class="tile-note"><span id="stat-events">{{ stats.live.events_received }}</span> events received</span>
+  </div>
+</section>
+
+<section class="panel panel-wide">
+  <header class="panel-head">
+    <h2>Live security activity</h2>
+    <div class="panel-actions">
+      <button type="button" id="live-pause" class="btn" aria-pressed="false">Pause</button>
+      <a class="btn btn-quiet" href="{{ url_for('pages.live') }}">Full view</a>
+    </div>
+  </header>
+  <ol class="feed" id="live-feed" data-empty="Waiting for activity. Events and alerts appear here as the pipeline produces them."></ol>
+  <p class="panel-note" id="live-note">Streaming over Server-Sent Events. The feed keeps a recent window only.</p>
+</section>
+
+<div class="grid-2">
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Recent incidents</h2>
+      <a class="btn btn-quiet" href="{{ url_for('pages.incidents') }}">All incidents</a>
+    </header>
+    {% if incidents %}
+    <table class="table">
+      <thead><tr><th>ID</th><th>Severity</th><th>Risk</th><th>Title</th><th>Host</th><th>Last seen</th></tr></thead>
+      <tbody>
+      {% for incident in incidents %}
+        <tr>
+          <td>{{ incident_link(incident.incident_id) }}</td>
+          <td>{{ severity_badge(incident.severity) }}</td>
+          <td>{{ risk_bar(incident.risk_score) }}</td>
+          <td class="cell-wide">{{ untrusted(incident.title, "untrusted") }}</td>
+          <td>{{ untrusted(incident.host) }}</td>
+          <td class="mono dim">{{ incident.last_seen|short_date }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}{{ empty("No incidents stored yet. Run: sentinelforge detect ... | sentinelforge correlate ...") }}{% endif %}
+  </section>
+
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Recent alerts</h2>
+      <a class="btn btn-quiet" href="{{ url_for('pages.alerts') }}">All alerts</a>
+    </header>
+    {% if alerts %}
+    <table class="table">
+      <thead><tr><th>Time</th><th>Severity</th><th>Rule</th><th>Description</th><th>Incident</th></tr></thead>
+      <tbody>
+      {% for alert in alerts %}
+        <tr>
+          <td class="mono dim">{{ alert.timestamp|short_time }}</td>
+          <td>{{ severity_badge(alert.severity) }}</td>
+          <td class="mono">{{ alert.rule_id }}</td>
+          <td class="cell-wide">{{ untrusted(alert.description, "untrusted") }}</td>
+          <td>{{ incident_link(alert.incident_id) if alert.incident_id else "-" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}{{ empty("No alerts yet.") }}{% endif %}
+  </section>
+</div>
+
+<div class="grid-2">
+  <section class="panel">
+    <header class="panel-head"><h2>MITRE ATT&amp;CK coverage</h2>
+      <a class="btn btn-quiet" href="{{ url_for('pages.mitre') }}">Full matrix</a></header>
+    {% if mitre %}
+    <table class="table">
+      <thead><tr><th>Technique</th><th>Tactic</th><th>Alerts</th><th>Incidents</th><th>Highest</th></tr></thead>
+      <tbody>
+      {% for item in mitre %}
+        <tr>
+          <td>{{ mitre_chip(item) }}</td>
+          <td class="dim">{{ item.tactic|or_dash }}</td>
+          <td class="mono">{{ item.alert_count }}</td>
+          <td class="mono">{{ item.incident_count }}</td>
+          <td>{{ severity_badge(item.highest_severity) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}{{ empty("No ATT&CK techniques have fired yet.") }}{% endif %}
+  </section>
+
+  <section class="panel">
+    <header class="panel-head"><h2>Sensor status</h2>
+      <a class="btn btn-quiet" href="{{ url_for('pages.sensors') }}">Details</a></header>
+    <table class="table">
+      <thead><tr><th>Source</th><th>State</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for sensor in sensors %}
+        <tr>
+          <td class="mono">{{ sensor.name }}</td>
+          <td>
+            <span class="state state-{{ 'on' if sensor.available else 'off' }}">
+              {{ sensor.state|upper }}
+            </span>
+          </td>
+          <td class="dim cell-wide">{{ sensor.reason or sensor.description or "-" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="panel">
+  <header class="panel-head"><h2>Recent AI analyses</h2></header>
+  {% if ai_analyses %}
+  <table class="table">
+    <thead><tr><th>Incident</th><th>Deterministic</th><th>Title</th><th>Last seen</th><th></th></tr></thead>
+    <tbody>
+    {% for incident in ai_analyses %}
+      <tr>
+        <td>{{ incident_link(incident.incident_id) }}</td>
+        <td>{{ severity_badge(incident.severity) }} {{ risk_bar(incident.risk_score) }}</td>
+        <td class="cell-wide">{{ untrusted(incident.title, "untrusted") }}</td>
+        <td class="mono dim">{{ incident.last_seen|short_date }}</td>
+        <td><a class="btn btn-quiet" href="{{ url_for('pages.incident_detail', incident_id=incident.incident_id) }}#ai">AI analysis</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}{{ empty("No incident has an AI analysis yet. Run: sentinelforge ai analyze INC-000001 --provider mock") }}{% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/live.js') }}" defer></script>
+{% endblock %}
