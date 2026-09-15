@@ -26,7 +26,7 @@ therefore reproduces byte-identical events.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence
 
@@ -93,6 +93,14 @@ class Expectation:
         response_options: Containment action types the incident's own evidence
             should offer an analyst (``block_ip``, ``kill_process``).
         process_tree_pids: PIDs that must appear in the reconstructed lineage.
+        process_tree_missing_pids: PIDs the scenario's *telemetry* contains that
+            the reconstructed lineage does **not** show, checked exactly.  The
+            process tree is built from one incident's evidence plus the parents
+            that evidence names, so a process the sensors observed but no rule
+            alerted on never reaches it.  That is a real visibility gap, and
+            pinning it here is how Phase 8 keeps it visible: the check fails
+            both if the gap widens and if it silently closes, which forces the
+            documented limitation to be revisited either way.
         network_destinations: ``"ip:port"`` pairs the network view must show.
         notes: Free text shown in reports; never asserted on.
     """
@@ -110,6 +118,7 @@ class Expectation:
     users: frozenset[str] = frozenset()
     response_options: frozenset[str] = frozenset()
     process_tree_pids: frozenset[int] = frozenset()
+    process_tree_missing_pids: frozenset[int] | None = None
     network_destinations: frozenset[str] = frozenset()
     notes: str = ""
 
@@ -128,6 +137,11 @@ class Expectation:
             "users": sorted(self.users),
             "response_options": sorted(self.response_options),
             "process_tree_pids": sorted(self.process_tree_pids),
+            "process_tree_missing_pids": (
+                sorted(self.process_tree_missing_pids)
+                if self.process_tree_missing_pids is not None
+                else None
+            ),
             "network_destinations": sorted(self.network_destinations),
             "notes": self.notes,
         }

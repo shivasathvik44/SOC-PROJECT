@@ -68,6 +68,12 @@ from .response.engine import (
 from .response.models import ActionStatus, ActionType
 from .response.validators import ValidationError as ResponseValidationError
 from .sensors.base import SensorUnavailableError
+from .simulation.benchmark import DEFAULT_SIZES, MAX_EVENTS, run_benchmark
+from .simulation.report import DEFAULT_REPORT_DIR, write_reports
+from .simulation.results import Verdict
+from .simulation.runner import RunnerConfig, ScenarioRunner, SIMULATION_LABEL
+from .simulation.scenarios import all_scenarios, get_scenario
+from .simulation.security import run_security_probes
 from .sensors.ebpf.loader import check_ebpf_support
 from .sensors.registry import SENSOR_NAMES, build_sensor, get_spec, sensor_statuses
 from .storage.sqlite import IncidentStore, default_database_path
@@ -524,7 +530,133 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     _add_response_parser(subparsers)
+    _add_simulate_parser(subparsers)
+    _add_benchmark_parser(subparsers)
     return parser
+
+
+def _add_simulate_parser(subparsers) -> None:
+    """Build the ``sentinelforge simulate`` command (Phase 8).
+
+    The simulator generates synthetic telemetry in memory and runs it through
+    the real pipeline.  It sends no traffic, starts no process, loads no kernel
+    program, and drives containment against in-memory backends only.
+    """
+    simulate = subparsers.add_parser(
+        "simulate",
+        help="run a safe synthetic attack scenario through the whole pipeline",
+        description=(
+            "Generate synthetic security telemetry, run it through detection, "
+            "correlation, the AI analyst, the dashboard serializers and the "
+            "response lifecycle, and report expected versus observed for every "
+            "stage. Nothing is sent anywhere, nothing is executed, and "
+            "containment runs against in-memory backends."
+        ),
+    )
+    simulate.add_argument(
+        "scenario",
+        nargs="?",
+        default=None,
+        metavar="SCENARIO",
+        help="scenario id, 'list' to show them all, or 'all' to run every one",
+    )
+    simulate.add_argument(
+        "--json", action="store_true", help="print the result as JSON instead of a report"
+    )
+    simulate.add_argument(
+        "--checks",
+        action="store_true",
+        help="print every check, not only the ones that failed",
+    )
+    simulate.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="pause this long between replayed events when writing --events-out, "
+        "so a watching dashboard shows the attack unfold (default: no pause; "
+        "pacing never affects the measured timings)",
+    )
+    simulate.add_argument(
+        "--events-out",
+        metavar="FILE",
+        default=None,
+        help="append the generated events as JSON Lines, for 'dashboard --watch-events'",
+    )
+    simulate.add_argument(
+        "--alerts-out",
+        metavar="FILE",
+        default=None,
+        help="append the resulting alerts as JSON Lines, for 'dashboard --watch-alerts'",
+    )
+    simulate.add_argument(
+        "--db",
+        metavar="PATH",
+        default=None,
+        help="store the simulated incident and its response actions here "
+        "(default: a temporary database that is deleted afterwards; the real "
+        "incident store is never written to)",
+    )
+    simulate.add_argument("--no-ai", action="store_true", help="skip the AI analysis stage")
+    simulate.add_argument(
+        "--no-dashboard", action="store_true", help="skip the dashboard serialization stage"
+    )
+    simulate.add_argument(
+        "--no-response", action="store_true", help="skip the containment lifecycle stage"
+    )
+    simulate.add_argument(
+        "--report",
+        metavar="DIR",
+        default=None,
+        nargs="?",
+        const=DEFAULT_REPORT_DIR,
+        help=f"write the validation reports to DIR (default: {DEFAULT_REPORT_DIR})",
+    )
+
+
+def _add_benchmark_parser(subparsers) -> None:
+    """Build the ``sentinelforge benchmark`` command (Phase 8)."""
+    bench = subparsers.add_parser(
+        "benchmark",
+        help="measure pipeline throughput and per-stage latency on synthetic events",
+        description=(
+            "Feed a bounded synthetic workload through the detection and "
+            "correlation engines and report events/second, CPU time, peak "
+            "allocation and per-stage latency. No kernel probe, firewall or "
+            "hosted model is exercised."
+        ),
+    )
+    bench.add_argument(
+        "--events",
+        "-n",
+        type=int,
+        action="append",
+        default=None,
+        metavar="N",
+        help=f"workload size (repeatable; default: {', '.join(str(s) for s in DEFAULT_SIZES)}; "
+        f"maximum {MAX_EVENTS:,})",
+    )
+    bench.add_argument(
+        "--scenario",
+        default="full-attack",
+        metavar="SCENARIO",
+        help="scenario used for the latency measurement (default: %(default)s)",
+    )
+    bench.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="skip the allocation measurement, which needs a second untimed pass "
+        "over each workload",
+    )
+    bench.add_argument("--json", action="store_true", help="print the report as JSON")
+    bench.add_argument(
+        "--report",
+        metavar="DIR",
+        default=None,
+        nargs="?",
+        const=DEFAULT_REPORT_DIR,
+        help=f"write benchmark.json and benchmark.md to DIR (default: {DEFAULT_REPORT_DIR})",
+    )
 
 
 #: CLI spelling of each action type, e.g. ``block-ip`` for ``block_ip``.
@@ -1709,7 +1841,17 @@ def run_dashboard_command(args: argparse.Namespace, stdout: TextIO | None = None
     Demo mode deliberately points at its own database: synthetic incidents must
     never be written into, or read alongside, real telemetry.
     """
-    from .dashboard.app import run_dashboard
+    try:
+        from .dashboard.app import run_dashboard
+    except ImportError as exc:
+        # Flask is an optional extra (`pip install "sentinelforge[dashboard]"`);
+        # everything else in the CLI must keep working without it, and this
+        # command must fail with one clear line, not a raw traceback.
+        LOGGER.error("the dashboard needs the optional 'dashboard' extra: %s", exc)
+        sys.stderr.write(
+            "\nInstall it with: pip install \"sentinelforge[dashboard]\"\n"
+        )
+        return 1
 
     db_path = args.db
     if args.demo:
@@ -2218,6 +2360,386 @@ def run_response(args: argparse.Namespace, stdout: TextIO | None = None) -> int:
     return EXIT_OK
 
 
+# --------------------------------------------------------------------------
+# Attack simulation, purple-team validation and benchmarking (Phase 8).
+#
+# These commands generate synthetic telemetry and run it through the pipeline
+# that is already installed.  They send nothing, execute nothing, and reach no
+# real firewall, process or session: containment is driven against the
+# in-memory backends in sentinelforge.response.backends.mock, constructed
+# directly rather than auto-detected.
+# --------------------------------------------------------------------------
+#: Exit code when a scenario or a probe failed.  Distinct from 1 (a usage or
+#: runtime error), so CI can tell "the tool broke" from "the platform failed".
+EXIT_VALIDATION_FAILED = 2
+
+#: How a verdict is spelled in the terminal report.
+_VERDICT_WORD = {Verdict.PASS: "PASSED", Verdict.FAIL: "FAILED", Verdict.SKIP: "SKIPPED"}
+
+
+def run_simulate_list(stdout: TextIO) -> int:
+    """Print every available scenario, attack ones first."""
+    stdout.write("Available scenarios:\n\n")
+    for scenario in all_scenarios():
+        techniques = ", ".join(scenario.mitre_techniques) or "-"
+        stdout.write(f"  {scenario.scenario_id:22} [{scenario.kind:6}] {scenario.name}\n")
+        stdout.write(f"  {'':22} MITRE: {techniques}\n")
+        for line in _wrap(scenario.description, width=78, indent=" " * 25):
+            stdout.write(line + "\n")
+        stdout.write("\n")
+    stdout.write(
+        "Run one with 'sentinelforge simulate <id>', or every one with "
+        "'sentinelforge simulate all'.\n"
+        "All scenarios are synthetic: no traffic is sent, nothing is executed, "
+        "and containment\nruns against in-memory backends.\n"
+    )
+    return EXIT_OK
+
+
+def _simulation_config(args: argparse.Namespace) -> RunnerConfig:
+    return RunnerConfig(
+        analyze=not args.no_ai,
+        visualize=not args.no_dashboard,
+        respond=not args.no_response,
+    )
+
+
+def render_scenario_result(result, show_all_checks: bool = False) -> str:
+    """The terminal report for one scenario run."""
+    lines = [
+        "SentinelForge Scenario Runner",
+        "",
+        f"Scenario     : {result.name}  ({result.scenario_id})",
+        f"Kind         : {result.kind}",
+        f"MITRE        : {', '.join(result.mitre_techniques) or '-'}",
+    ]
+    lines += _wrap(
+        result.description, width=78, indent="Description  : ", hang=" " * 15
+    )
+    observed = result.observed
+    lines += [
+        "",
+        f"Events generated : {len(result.events)}",
+        f"Alerts           : {observed.get('alert_count', 0)}"
+        + (f"  ({', '.join(observed.get('rule_ids') or [])})" if observed.get("rule_ids") else ""),
+        f"Incidents        : {observed.get('incident_count', 0)}",
+    ]
+    if observed.get("severity"):
+        lines.append(
+            f"Severity / risk  : {observed['severity']} / {observed.get('risk_score')}"
+        )
+    if observed.get("matched_chains"):
+        lines.append(f"Attack chains    : {', '.join(observed['matched_chains'])}")
+    if observed.get("techniques"):
+        lines.append(f"ATT&CK observed  : {', '.join(observed['techniques'])}")
+    if result.action is not None:
+        rolled_back = observed.get("rollback_status")
+        note = "in-memory mock backend"
+        if rolled_back:
+            note += f"; rolled back afterwards -> {rolled_back}"
+        lines.append(
+            f"Containment      : {result.action.action_type} {result.action.target} -> "
+            f"{result.action.status} (verified={result.action.verified}, {note})"
+        )
+
+    lines += ["", "Stages:"]
+    for stage in result.stages:
+        detail = ""
+        if stage.skipped:
+            detail = f"  ({stage.skip_reason})"
+        elif stage.error:
+            detail = f"  ({stage.error})"
+        passed = sum(1 for check in stage.checks if check.passed)
+        lines.append(
+            f"  {stage.name:15} {stage.verdict:4}  {passed}/{len(stage.checks)} checks{detail}"
+        )
+
+    shown = result.checks if show_all_checks else result.failures
+    if shown:
+        lines += ["", "Checks (expected vs observed):"]
+        lines += [f"  {check.line()}" for check in shown]
+
+    lines += [
+        "",
+        f"Checks: {result.checks_passed}/{len(result.checks)} passed",
+        "Timing: " + ", ".join(
+            f"{name} {value:.1f} ms" for name, value in result.timings.items()
+        ),
+        "",
+        f"Result: SCENARIO {_VERDICT_WORD.get(result.verdict, result.verdict)}",
+    ]
+    if result.error:
+        lines.append(f"Error : {result.error}")
+    return "\n".join(lines) + "\n"
+
+
+def _replay_to_files(args: argparse.Namespace, result, stdout: TextIO) -> None:
+    """Append the generated events and alerts to JSON Lines files.
+
+    This is the demonstration path: a dashboard started with
+    ``--watch-events`` / ``--watch-alerts`` tails these files, so a simulation
+    in one terminal becomes a live attack chain in another.  Every record is
+    stamped as simulated so it can never be mistaken for real telemetry.
+    """
+    if not args.events_out and not args.alerts_out:
+        return
+    import json
+
+    events_handle = alerts_handle = None
+    try:
+        if args.events_out:
+            events_handle = open(args.events_out, "a", encoding="utf-8")
+        if args.alerts_out:
+            alerts_handle = open(args.alerts_out, "a", encoding="utf-8")
+
+        # Alerts are written after the evidence that produced them, so the
+        # dashboard shows the story in the order it happened.
+        alerts_by_time = sorted(result.alerts, key=lambda alert: alert.last_seen or "")
+        pending = list(alerts_by_time)
+        for index, event in enumerate(result.events):
+            if args.delay and index:
+                time.sleep(args.delay)
+            if events_handle:
+                payload = event.to_dict()
+                payload["simulated"] = True
+                payload["simulation_label"] = SIMULATION_LABEL
+                # Also inside metadata, which is the only part of this record
+                # that survives SecurityEvent.from_dict when the dashboard's
+                # file tailer reads it back.
+                payload["metadata"] = {**(payload.get("metadata") or {}),
+                                       "simulated": True,
+                                       "simulation_label": SIMULATION_LABEL}
+                events_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                events_handle.flush()
+            while pending and (pending[0].last_seen or "") <= (event.timestamp or ""):
+                alert = pending.pop(0)
+                if alerts_handle:
+                    payload = alert.to_dict()
+                    payload["simulated"] = True
+                    payload["simulation_label"] = SIMULATION_LABEL
+                    alerts_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                    alerts_handle.flush()
+        for alert in pending:
+            if alerts_handle:
+                payload = alert.to_dict()
+                payload["simulated"] = True
+                payload["simulation_label"] = SIMULATION_LABEL
+                alerts_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                alerts_handle.flush()
+    except OSError as exc:
+        LOGGER.error("could not write the replay files: %s", exc)
+        return
+    finally:
+        for handle in (events_handle, alerts_handle):
+            if handle is not None:
+                handle.close()
+    written = ", ".join(filter(None, (args.events_out, args.alerts_out)))
+    stdout.write(f"\nReplayed {len(result.events)} synthetic event(s) to {written}\n")
+
+
+def _write_validation_reports(directory: str, results, stdout: TextIO) -> None:
+    """Write the Phase 8 report set for a completed run."""
+    benchmark = run_benchmark()
+    probes = run_security_probes()
+    paths = write_reports(directory, results, benchmark=benchmark, probes=probes)
+    stdout.write("\nReports written:\n")
+    for path in paths:
+        stdout.write(f"  {path}\n")
+
+
+def _simulation_db_path(args: argparse.Namespace) -> str | None:
+    """Validate ``--db``, refusing the analyst's real incident store.
+
+    A simulation writes synthetic incidents and synthetic response actions.
+    Mixing those into the database a SOC actually works from would corrupt an
+    investigation, so the one path this command will not accept is the default
+    one.  Any other location -- including a deliberate copy -- is the
+    operator's call.
+
+    Raises:
+        ValueError: when ``--db`` names the real incident database.
+    """
+    requested = getattr(args, "db", None)
+    if requested is None:
+        return None
+    if os.path.abspath(requested) == os.path.abspath(default_database_path()):
+        raise ValueError(
+            "refusing to write synthetic incidents into the real incident "
+            f"database ({default_database_path()}). Omit --db to use a temporary "
+            "database, or name a different file."
+        )
+    return requested
+
+
+def run_simulate(args: argparse.Namespace, stdout: TextIO | None = None) -> int:
+    """Run the ``simulate`` command.  Returns a process exit code."""
+    stdout = stdout or sys.stdout
+    target = args.scenario
+
+    if target is None or target == "list":
+        return run_simulate_list(stdout)
+
+    try:
+        db_path = _simulation_db_path(args)
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return EXIT_ERROR
+
+    runner = ScenarioRunner(_simulation_config(args), db_path=db_path)
+
+    if target == "all":
+        results = runner.run_all()
+    else:
+        try:
+            scenario = get_scenario(target)
+        except KeyError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return EXIT_ERROR
+        results = [runner.run(scenario)]
+
+    if args.json:
+        payload = (
+            [result.to_dict() for result in results]
+            if len(results) > 1
+            else results[0].to_dict()
+        )
+        _emit_json(payload, stdout)
+    elif len(results) == 1:
+        stdout.write(render_scenario_result(results[0], show_all_checks=args.checks))
+    else:
+        stdout.write(_render_scenario_table(results, show_all_checks=args.checks))
+
+    if len(results) == 1:
+        _replay_to_files(args, results[0], stdout)
+    if args.report:
+        _write_validation_reports(args.report, results, stdout)
+
+    failed = [result for result in results if result.verdict == Verdict.FAIL]
+    return EXIT_VALIDATION_FAILED if failed else EXIT_OK
+
+
+def _render_scenario_table(results, show_all_checks: bool = False) -> str:
+    """A one-line-per-scenario summary for ``simulate all``."""
+    lines = [
+        "SentinelForge Scenario Runner - all scenarios",
+        "",
+        f"{'Scenario':22} {'Kind':7} {'Alerts':>6} {'Incidents':>9} {'Checks':>9}  Result",
+        "-" * 72,
+    ]
+    for result in results:
+        lines.append(
+            f"{result.scenario_id:22} {result.kind:7} "
+            f"{result.observed.get('alert_count', 0):>6} "
+            f"{result.observed.get('incident_count', 0):>9} "
+            f"{result.checks_passed:>4}/{len(result.checks):<4} "
+            f"{result.verdict}"
+        )
+    passed = sum(1 for result in results if result.passed)
+    checks = sum(len(result.checks) for result in results)
+    checks_passed = sum(result.checks_passed for result in results)
+    lines += [
+        "-" * 72,
+        f"{passed}/{len(results)} scenarios passed, "
+        f"{checks_passed}/{checks} checks passed",
+    ]
+    for result in results:
+        shown = result.checks if show_all_checks else result.failures
+        if not shown:
+            continue
+        lines += ["", f"{result.scenario_id}:"]
+        lines += [f"  {check.line()}" for check in shown]
+        if result.error:
+            lines.append(f"  ERROR {result.error}")
+    return "\n".join(lines) + "\n"
+
+
+def render_benchmark(report) -> str:
+    """The terminal benchmark report."""
+    env = report.environment
+    lines = [
+        "SentinelForge Benchmark",
+        "",
+        f"Environment  : {env.get('implementation')} {env.get('python')} on "
+        f"{env.get('system')} {env.get('release')} ({env.get('machine')})",
+        f"Measured at  : {env.get('measured_at')}",
+        "",
+        f"{'Events':>8} {'Alerts':>7} {'Incid.':>7} {'Detect ms':>10} {'Correl ms':>10} "
+        f"{'Total ms':>9} {'Events/s':>10} {'CPU s':>7} {'Peak KB':>9}",
+        "-" * 84,
+    ]
+    for item in report.throughput:
+        data = item.to_dict()
+        lines.append(
+            f"{data['events']:>8} {data['alerts']:>7} {data['incidents']:>7} "
+            f"{data['detection_ms']:>10.1f} {data['correlation_ms']:>10.1f} "
+            f"{data['total_ms']:>9.1f} {data['events_per_second']:>10,.0f} "
+            f"{data['cpu_seconds']:>7.2f} "
+            + (
+                f"{data['peak_allocated_kb']:>9,.0f}"
+                if data["memory_measured"]
+                else f"{'-':>9}"
+            )
+        )
+    if report.latency:
+        lat = report.latency.to_dict()
+        lines += [
+            "",
+            f"Latency for one incident ({lat['scenario_id']}: {lat['events']} events -> "
+            f"{lat['alerts']} alerts -> {lat['incidents']} incident):",
+            f"  Event  -> Alert    : {lat['event_to_alert_ms']:8.2f} ms",
+            f"  Alert  -> Incident : {lat['alert_to_incident_ms']:8.2f} ms",
+            f"  Incident -> AI     : {lat['incident_to_ai_ms']:8.2f} ms  "
+            f"({lat['ai_provider']} provider)",
+            f"  Deterministic total: {lat['deterministic_pipeline_ms']:8.2f} ms",
+            f"  Total              : {lat['total_ms']:8.2f} ms",
+        ]
+    lines += [
+        "",
+        "Wall time is a monotonic clock (time.perf_counter); event timestamps are",
+        "synthetic log times and are never used as measurements. Peak KB comes from",
+        "a second, untimed tracemalloc pass, because instrumenting allocations would",
+        "inflate the timings. No kernel probe, firewall or hosted model is exercised.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def run_benchmark_command(args: argparse.Namespace, stdout: TextIO | None = None) -> int:
+    """Run the ``benchmark`` command.  Returns a process exit code."""
+    stdout = stdout or sys.stdout
+    sizes = args.events or list(DEFAULT_SIZES)
+    invalid = [size for size in sizes if size < 1]
+    if invalid:
+        sys.stderr.write("--events must be a positive number of events\n")
+        return EXIT_ERROR
+    capped = [size for size in sizes if size > MAX_EVENTS]
+    if capped:
+        LOGGER.warning(
+            "workload sizes above %d are capped: %s", MAX_EVENTS, ", ".join(map(str, capped))
+        )
+
+    try:
+        report = run_benchmark(
+            sizes=sizes,
+            latency_scenario=args.scenario,
+            measure_memory=not args.no_memory,
+        )
+    except KeyError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return EXIT_ERROR
+
+    if args.json:
+        _emit_json(report.to_dict(), stdout)
+    else:
+        stdout.write(render_benchmark(report))
+
+    if args.report:
+        paths = write_reports(args.report, results=(), benchmark=report)
+        stdout.write("\nReports written:\n")
+        for path in paths:
+            stdout.write(f"  {path}\n")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # Restore default SIGPIPE behaviour so `... | head` does not traceback.
     try:
@@ -2251,6 +2773,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_dashboard_command(args)
     if args.command == "response":
         return run_response(args)
+    if args.command == "simulate":
+        return run_simulate(args)
+    if args.command == "benchmark":
+        return run_benchmark_command(args)
     parser.print_help()
     return 0
 

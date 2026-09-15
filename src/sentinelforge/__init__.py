@@ -30,9 +30,24 @@ the system and written to an append-only audit trail.  Nothing is automatic,
 and nothing that came from a log line, a telemetry field or an AI answer can
 cause anything to be executed.
 
+Phase 8 adds the validation layer: safe synthetic attack scenarios, a
+purple-team runner that compares what the platform *should* conclude against
+what it actually concluded, false-positive and boundary testing, performance
+benchmarking, security boundary probes, and generated validation reports.  It
+adds no detection capability -- its whole job is to measure the ones that are
+already there, and to expose the places where they fall short.
+
 Phases 1-6 are strictly read-only.  Phase 7 acts only when a human says so.
+Phase 8 is synthetic throughout: it sends nothing, executes nothing, and drives
+containment against in-memory backends only.
+
+This is a v1.0.0 release candidate: Phase 9 audits and hardens packaging,
+installation and documentation for a first stable release on Linux.  It adds
+no pipeline stage and changes no detection, correlation, AI or response
+behavior -- see the "Deployment and installation" section of the README for
+what changed and why.
 """
 
-__version__ = "0.7.0"
+__version__ = "1.0.0rc1"
 
 __all__ = ["__version__"]

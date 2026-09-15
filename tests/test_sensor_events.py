@@ -352,7 +352,13 @@ class TestTelemetryDetections:
 # ==========================================================================
 class TestIntegration:
     def test_mock_telemetry_flows_through_detection_and_correlation(self):
-        events = MockSensor().collect()
+        # Explicit host, not the machine's own: this must be a deterministic,
+        # portable fixture, not an assertion that happens to hold only on the
+        # one machine it was written on (found by Phase 9.2's fresh-container
+        # validation - MockSensor() with no host falls back to the real
+        # socket.gethostname(), so this test failed on any host not literally
+        # named 'fedora').
+        events = MockSensor(host="fedora").collect()
 
         alerts = DetectionEngine().run(events)
         assert alerts, "the curl -> sh lineage should raise an alert"

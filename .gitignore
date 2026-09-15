@@ -7,6 +7,9 @@ build/
 dist/
 .venv/
 venv/
+*.egg
+.tox/
+.pytype/
 
 # Tooling
 .pytest_cache/
@@ -39,3 +42,12 @@ ai-analyses/
 .idea/
 *.swp
 .DS_Store
+
+# Phase 8 validation reports are *generated* from a run on one machine, and
+# their numbers (kernel version, CPU, timestamps, absolute file paths) describe
+# that machine, not the code. The whole directory is ignored so a routine
+# `git add .` cannot pick up a stray run - commit a specific report only
+# deliberately, with `git add -f`, as evidence of one validation run. The
+# reports themselves contain synthetic scenario data only, never real
+# telemetry.
+reports/

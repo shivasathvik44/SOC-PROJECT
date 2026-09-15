@@ -1,0 +1,98 @@
+# SentinelForge eBPF process-execution sensor - systemd service (Phase 9.3).
+#
+# OPTIONAL and ADVANCED. Everything else in this deployment - the dashboard,
+# the periodic scan, the whole Phase 8 simulator - runs fully without this
+# unit. Only install it if you specifically want real kernel-level process
+# telemetry (see sensors/ebpf/process.py) running continuously.
+#
+# THIS IS THE ONLY UNIT IN THIS DEPLOYMENT THAT NEEDS ELEVATED PRIVILEGE, and
+# it needs it for one documented reason: loading a BPF program is a
+# privileged kernel operation. sensors/ebpf/loader.py::has_bpf_privileges()
+# accepts either root OR the CAP_BPF + CAP_PERFMON capability pair - this
+# unit is written for the second, narrower option, not for root, per Phase
+# 9.3's requirement not to grant more privilege than a capability actually
+# needs.
+#
+# THIS IS UNTESTED AGAINST A REAL KERNEL in this project's own CI and in the
+# Phase 9.2 fresh-container validation, because neither has privileged eBPF
+# access available. What IS verified (by the existing test suite and by
+# `sentinelforge sensor check`) is that has_bpf_privileges() itself correctly
+# recognizes CAP_BPF + CAP_PERFMON as sufficient - not that BCC's runtime
+# compilation step succeeds unprivileged end to end on every kernel. If it
+# does not on yours, the fallback is User=root (commented below); that is a
+# real privilege trade-off documented, not hidden.
+#
+# BCC compiles a small C program via LLVM at load time and reads kernel BTF /
+# kallsyms / tracing filesystems to do it - broad kernel introspection that
+# is BCC's normal operation, not a bug. Hardening below is intentionally
+# LIGHTER than the dashboard/scan units for exactly that reason: directives
+# like ProtectKernelModules=, ProtectSystem=strict or a tight
+# SystemCallFilter= would break BCC's ability to compile and load the probe
+# at all. The capability grant is this unit's real security boundary, not
+# filesystem sandboxing.
+#
+# NOT installed automatically, NOT enabled by default. See
+# packaging/systemd/README.md.
+
+[Unit]
+Description=SentinelForge eBPF process-execution sensor (privileged, optional)
+Documentation=https://github.com/YOUR-ORG/SOC-PROJECT/blob/main/README.md
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# Preferred: an unprivileged user with exactly the two capabilities BCC's own
+# check (has_bpf_privileges()) accepts as an alternative to root. Requires a
+# 5.8+ kernel with CAP_BPF/CAP_PERFMON support; run
+# `sentinelforge sensor check` first to confirm this host has it.
+User=sentinelforge
+Group=sentinelforge
+AmbientCapabilities=CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+NoNewPrivileges=yes
+
+# Fallback for older kernels where BCC's runtime compilation needs more than
+# CAP_BPF/CAP_PERFMON grants (kernel headers, kallsyms, and older tracing
+# APIs were not capability-gated before CAP_BPF existed). Uncomment this pair
+# and comment out the four lines above instead - do not run as root AND keep
+# AmbientCapabilities set; pick one.
+#User=root
+#Group=root
+
+StateDirectory=sentinelforge
+WorkingDirectory=/var/lib/sentinelforge
+
+EnvironmentFile=-/etc/sentinelforge/sentinelforge.env
+
+# Hardcoded, not ${SENTINELFORGE_BIN}: systemd does not expand environment
+# variables in the executable position of ExecStart= - see
+# sentinelforge-dashboard.service's header comment. Edit this line if your
+# install path differs from a system-wide `pip install`.
+#
+# Command-line arguments can contain secrets typed at a shell; --no-args
+# compiles that capture out of the BPF program entirely rather than merely
+# redacting it afterward - see the README's "Privacy" note for this sensor.
+ExecStart=/usr/local/bin/sentinelforge sensor start ebpf-process \
+    --no-args \
+    --output /var/lib/sentinelforge/ebpf-process.jsonl
+
+Restart=on-failure
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinelforge-ebpf-process
+
+# --- security hardening (deliberately minimal - see the header comment) ----
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

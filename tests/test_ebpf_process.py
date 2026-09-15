@@ -5,6 +5,7 @@ synthetic raw records, and the sensor's failure paths are driven with patched
 support probes.
 """
 
+import ctypes
 import os
 from types import SimpleNamespace
 
@@ -16,10 +17,14 @@ from sentinelforge.sensors.ebpf import loader
 from sentinelforge.sensors.ebpf.process import (
     ARGSIZE,
     MAX_ARGS,
+    TASK_COMM_LEN,
     EbpfProcessSensor,
+    ExecEvent,
     build_program,
+    decode_exec_record,
     decode_process_event,
     resolve_user,
+    synthetic_exec_event,
     synthetic_record,
 )
 
@@ -56,6 +61,58 @@ class TestBpfProgram:
 
     def test_uid_filter_becomes_a_compile_flag(self):
         assert "-DFILTER_UID=1000" in EbpfProcessSensor(uid=1000).cflags()
+
+
+class TestExecEventLayout:
+    """The ctypes structure must mirror ``struct exec_event_t`` exactly: same
+    field order, same scalar types, same array dimensions."""
+
+    def test_field_order(self):
+        assert [name for name, _ in ExecEvent._fields_] == [
+            "ts",
+            "pid",
+            "ppid",
+            "uid",
+            "gid",
+            "nargs",
+            "comm",
+            "pcomm",
+            "filename",
+            "argv",
+        ]
+
+    def test_array_dimensions_match_the_c_struct(self):
+        # comm/pcomm/filename auto-convert to (NUL-trimmed) bytes on access,
+        # so their declared size is read off the field descriptor instead.
+        assert ExecEvent.comm.size == TASK_COMM_LEN
+        assert ExecEvent.pcomm.size == TASK_COMM_LEN
+        assert ExecEvent.filename.size == ARGSIZE * 2
+        # argv is char[MAX_ARGS][ARGSIZE]: MAX_ARGS slots, each ARGSIZE bytes.
+        # Each slot is itself a fixed-size ctypes array (not auto-converted),
+        # so bytes(slot) reflects the full declared width.
+        instance = ExecEvent()
+        assert len(instance.argv) == MAX_ARGS
+        assert all(len(bytes(slot)) == ARGSIZE for slot in instance.argv)
+
+    def test_exact_offsets_and_total_size(self):
+        """Pins the whole layout: any drift from exec_event_t fails here,
+        not as silently corrupted fields when decoding real kernel data."""
+        expected = {
+            "ts": (0, 8),
+            "pid": (8, 4),
+            "ppid": (12, 4),
+            "uid": (16, 4),
+            "gid": (20, 4),
+            "nargs": (24, 4),
+            "comm": (28, TASK_COMM_LEN),
+            "pcomm": (28 + TASK_COMM_LEN, TASK_COMM_LEN),
+            "filename": (28 + 2 * TASK_COMM_LEN, ARGSIZE * 2),
+            "argv": (28 + 2 * TASK_COMM_LEN + ARGSIZE * 2, MAX_ARGS * ARGSIZE),
+        }
+        for name, (offset, size) in expected.items():
+            field = getattr(ExecEvent, name)
+            assert (field.offset, field.size) == (offset, size), name
+        assert ctypes.sizeof(ExecEvent) == 512
 
 
 class TestDecoder:
@@ -146,6 +203,85 @@ class TestDecoder:
         data = json.loads(decode_process_event(synthetic_record()).to_json())
         assert data["metadata"]["ppid"] == 4100
         assert data["source"] == "ebpf"
+
+
+class TestManualDecoder:
+    """Exercises decode_exec_record() -- the ctypes decoder that replaces
+    ``self._bpf["exec_events"].event(data)`` -- against real raw bytes."""
+
+    def test_raw_bytes_decode_matches_synthetic_record(self):
+        blob = bytes(synthetic_exec_event())
+        decoded = decode_exec_record(blob, len(blob))
+
+        expected = decode_process_event(synthetic_record(), host="fedora")
+        actual = decode_process_event(decoded, host="fedora")
+
+        assert actual.process == expected.process == "curl"
+        assert actual.executable == expected.executable == "/usr/bin/curl"
+        assert (
+            actual.command_line
+            == expected.command_line
+            == "curl http://198.51.100.9/x.sh"
+        )
+        assert (actual.pid, actual.ppid) == (expected.pid, expected.ppid) == (4101, 4100)
+        assert actual.parent_process == expected.parent_process == "bash"
+        assert actual.metadata["uid"] == expected.metadata["uid"] == 1000
+
+    def test_populated_argv_is_decoded_in_order(self):
+        blob = bytes(synthetic_exec_event(nargs=3, argv=[b"python3", b"-c", b"print(1)"]))
+        event = decode_process_event(decode_exec_record(blob, len(blob)))
+        assert event.command_line == "python3 -c print(1)"
+        assert "args_truncated" not in event.metadata
+
+    def test_argv_at_the_cap_is_flagged_truncated(self):
+        argv = [f"arg{i}".encode() for i in range(MAX_ARGS)]
+        blob = bytes(synthetic_exec_event(nargs=MAX_ARGS, argv=argv))
+        event = decode_process_event(decode_exec_record(blob, len(blob)))
+        assert event.metadata["args_truncated"] is True
+        assert len(event.command_line.split()) == MAX_ARGS
+
+    def test_no_args_mode_yields_no_command_line(self):
+        """When --no-args disables capture, the kernel never populates argv;
+        the manual decoder must not fabricate a command line either."""
+        blob = bytes(synthetic_exec_event(nargs=0, argv=[]))
+        event = decode_process_event(decode_exec_record(blob, len(blob)))
+        assert event.command_line is None
+        assert "command_line" not in event.metadata
+
+    def test_truncated_record_is_rejected(self):
+        blob = bytes(ExecEvent())[:10]
+        with pytest.raises(ValueError, match="truncated exec record"):
+            decode_exec_record(blob, len(blob))
+
+    def test_null_pointer_record_is_rejected(self):
+        with pytest.raises(ValueError, match="truncated exec record"):
+            decode_exec_record(0, ctypes.sizeof(ExecEvent))
+
+    def test_handle_event_swallows_a_truncated_record(self, caplog):
+        sensor = EbpfProcessSensor()
+        sensor._clock = loader.BootClock()
+        sensor._handle_event(0, b"\x00" * 4, 4)  # far too short to be real
+        assert sensor.events_seen == 0
+        assert "unreadable exec record" in caplog.text
+
+    def test_bcc_dynamic_event_method_is_never_invoked(self):
+        """Regression guard: _handle_event must decode via ExecEvent directly
+        and never reach BCC's PerfEventArray.event(), whose _get_event_class()
+        path can raise SystemExit. The old multidimensional-array decode via
+        ``self._bpf["exec_events"].event(data)`` must no longer be used."""
+
+        class PoisonedTable:
+            def event(self, data):  # pragma: no cover - must never run
+                raise SystemExit("bcc _get_event_class exploded")
+
+        blob = bytes(synthetic_exec_event())
+
+        sensor = EbpfProcessSensor()
+        sensor._bpf = {"exec_events": PoisonedTable()}
+        sensor._clock = loader.BootClock()
+        sensor._handle_event(0, blob, len(blob))
+
+        assert sensor.events_seen == 1
 
 
 class TestSensorLifecycle:

@@ -43,8 +43,33 @@ from .scenario import (
     ScenarioKind,
     scenario_time,
 )
+from .benchmark import (
+    BenchmarkReport,
+    DEFAULT_SIZES,
+    LatencyResult,
+    MAX_EVENTS,
+    ThroughputResult,
+    measure_latency,
+    measure_throughput,
+    run_benchmark,
+    synthetic_workload,
+)
+from .report import (
+    DEFAULT_REPORT_DIR,
+    ValidationSummary,
+    coverage_rows,
+    write_reports,
+)
 from .results import Check, ScenarioResult, StageResult, Verdict
-from .runner import RunnerConfig, ScenarioRunner, run_scenario, run_scenarios
+from .runner import (
+    SIMULATION_ACTOR,
+    SIMULATION_LABEL,
+    RunnerConfig,
+    ScenarioRunner,
+    run_scenario,
+    run_scenarios,
+)
+from .security import SecurityProbeReport, run_security_probes
 from .scenarios import (
     SCENARIOS,
     all_scenarios,
@@ -56,22 +81,39 @@ from .scenarios import (
 
 __all__ = [
     "BASE_TIME",
+    "BenchmarkReport",
     "Check",
+    "DEFAULT_REPORT_DIR",
+    "DEFAULT_SIZES",
     "Expectation",
+    "LatencyResult",
+    "MAX_EVENTS",
     "RunnerConfig",
     "SCENARIOS",
+    "SIMULATION_ACTOR",
+    "SIMULATION_LABEL",
     "Scenario",
     "ScenarioKind",
     "ScenarioResult",
     "ScenarioRunner",
+    "SecurityProbeReport",
     "StageResult",
+    "ThroughputResult",
+    "ValidationSummary",
     "Verdict",
     "all_scenarios",
     "attack_scenarios",
     "benign_scenarios",
+    "coverage_rows",
     "get_scenario",
+    "measure_latency",
+    "measure_throughput",
+    "run_benchmark",
     "run_scenario",
     "run_scenarios",
+    "run_security_probes",
     "scenario_ids",
     "scenario_time",
+    "synthetic_workload",
+    "write_reports",
 ]

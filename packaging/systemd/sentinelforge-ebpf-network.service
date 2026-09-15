@@ -1,0 +1,63 @@
+# SentinelForge eBPF outbound-network sensor - systemd service (Phase 9.3).
+#
+# OPTIONAL and ADVANCED, and untested against a real kernel in this project's
+# own validation for the same reason as sentinelforge-ebpf-process.service -
+# read that unit's header comment first; everything it says about privilege,
+# CAP_BPF/CAP_PERFMON, why hardening here is deliberately lighter, and what
+# is and is not verified applies identically here.
+#
+# This sensor traces outbound connect() calls only - see
+# sensors/ebpf/network.py. It cannot see inbound connections or packet
+# contents; it was never designed to.
+#
+# NOT installed automatically, NOT enabled by default.
+
+[Unit]
+Description=SentinelForge eBPF outbound-network sensor (privileged, optional)
+Documentation=https://github.com/YOUR-ORG/SOC-PROJECT/blob/main/README.md
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+User=sentinelforge
+Group=sentinelforge
+AmbientCapabilities=CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+NoNewPrivileges=yes
+
+# Fallback for older kernels - see sentinelforge-ebpf-process.service's
+# identical comment. Pick one pair, not both.
+#User=root
+#Group=root
+
+StateDirectory=sentinelforge
+WorkingDirectory=/var/lib/sentinelforge
+
+EnvironmentFile=-/etc/sentinelforge/sentinelforge.env
+
+# Hardcoded, not ${SENTINELFORGE_BIN} - see sentinelforge-dashboard.service's
+# header comment (systemd does not expand environment variables in the
+# executable position of ExecStart=). Edit this line if your install path
+# differs from a system-wide `pip install`.
+ExecStart=/usr/local/bin/sentinelforge sensor start ebpf-network \
+    --output /var/lib/sentinelforge/ebpf-network.jsonl
+
+Restart=on-failure
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinelforge-ebpf-network
+
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

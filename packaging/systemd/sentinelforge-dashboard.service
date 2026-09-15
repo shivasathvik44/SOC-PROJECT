@@ -1,0 +1,120 @@
+# SentinelForge SOC dashboard - systemd service (Phase 9.3).
+#
+# The dashboard is Phase 6: a read-only web console over the incident store.
+# It performs no detection, no correlation, no privileged operation, and no
+# automatic response - it renders what the pipeline already produced. That is
+# exactly why it needs no privilege at all: it runs as the dedicated,
+# unprivileged 'sentinelforge' system user, bound to loopback, with systemd's
+# sandboxing directives narrowed to the one thing it actually does (serve
+# HTTP from a database file it can read and write).
+#
+# NOT installed automatically. See packaging/systemd/README.md, or the
+# README's "Running SentinelForge as a systemd service" section, before
+# copying this file anywhere.
+#
+# IMPORTANT: ExecStart= below hardcodes /usr/local/bin/sentinelforge, the
+# path a system-wide `pip install .` actually uses (verified empirically -
+# see the Phase 9.3 report). systemd deliberately does NOT expand
+# environment variables in the executable position of ExecStart= (only in
+# the arguments that follow it), so this cannot be made configurable through
+# the environment file the way the dashboard's host/port are. If your
+# install path differs (a virtualenv install, for example - check with
+# `command -v sentinelforge` as the account this service will run as), edit
+# the ExecStart= line below to match before installing this file.
+# scripts/install-systemd-service.sh does this substitution for you
+# automatically when it copies unit files into place.
+
+[Unit]
+Description=SentinelForge SOC dashboard (read-only)
+Documentation=https://github.com/YOUR-ORG/SOC-PROJECT/blob/main/README.md
+After=network.target
+# The dashboard reads whatever the scan timer (or a human) has already put in
+# the incident store; it does not need the scan service to be up right now,
+# and must not fail to start just because a first scan has not run yet.
+Wants=sentinelforge-scan.timer
+
+# A persistently misconfigured service (missing Flask, a bad --db path)
+# should give up loudly rather than restart forever and flood journald.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sentinelforge
+Group=sentinelforge
+
+# --- explicit working/data directory (task 3) ------------------------------
+# StateDirectory= is systemd's own mechanism for "give this service a place
+# to keep its data": it creates /var/lib/sentinelforge (mode 0750, owned by
+# User=/Group= above) before the service starts and removes nothing on stop.
+# CacheDirectory= does the same under /var/cache for the AI analysis cache
+# Phase 5 keeps (XDG_CACHE_HOME below points there).
+StateDirectory=sentinelforge
+CacheDirectory=sentinelforge
+LogsDirectory=sentinelforge
+WorkingDirectory=/var/lib/sentinelforge
+
+# --- explicit configuration mechanism (task 3) ------------------------------
+# Built-in defaults first, so the service starts with no configuration file
+# at all; the optional EnvironmentFile below can override any of them (later
+# assignments win). The leading '-' means systemd does not fail to start if
+# the file is missing.
+Environment=SENTINELFORGE_DASHBOARD_HOST=127.0.0.1
+Environment=SENTINELFORGE_DASHBOARD_PORT=8080
+Environment=XDG_CACHE_HOME=/var/cache/sentinelforge
+EnvironmentFile=-/etc/sentinelforge/sentinelforge.env
+
+# No dashboard.html without dashboard extras: `pip install -e ".[dashboard]"`
+# on the target host, or the service exits immediately and journald says why.
+# ${SENTINELFORGE_DASHBOARD_HOST}/${SENTINELFORGE_DASHBOARD_PORT} ARE expanded
+# here (they are arguments, not the executable) - see the header comment for
+# why the binary path itself is not similarly templated.
+ExecStart=/usr/local/bin/sentinelforge dashboard \
+    --host ${SENTINELFORGE_DASHBOARD_HOST} \
+    --port ${SENTINELFORGE_DASHBOARD_PORT} \
+    --db /var/lib/sentinelforge/incidents.db
+
+# --- restart safely on unexpected failure (task 3) --------------------------
+# on-failure, not always: a clean, deliberate `systemctl stop` must stay
+# stopped. RestartSec plus the [Unit] StartLimit* above bound how fast and
+# how often it retries.
+Restart=on-failure
+RestartSec=5s
+
+# --- logs to journald (task 3) ---------------------------------------------
+# The default for Type=simple with no StandardOutput/StandardError override:
+# both are already journald. Named here so the intent is not left implicit.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinelforge-dashboard
+
+# --- security hardening (task 3) --------------------------------------------
+# The dashboard needs: a TCP listener, read/write on its own state/cache
+# directories, and nothing else - no subprocess, no device, no other part of
+# the filesystem. Everything below follows from exactly that.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

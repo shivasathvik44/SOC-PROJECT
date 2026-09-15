@@ -1,0 +1,23 @@
+# Runs sentinelforge-scan.service on a fixed interval. This is the unit you
+# enable (`systemctl enable --now sentinelforge-scan.timer`) - never enable
+# the .service directly.
+#
+# 10 minutes is a starting point, not a recommendation: match it to
+# SENTINELFORGE_SCAN_WINDOW in sentinelforge-scan.service (or
+# /etc/sentinelforge/sentinelforge.env) so the collection window always
+# overlaps the previous run with margin to spare, and reprocessing that
+# overlap is intentional - see that file's comment on idempotence.
+
+[Unit]
+Description=Run the SentinelForge periodic scan on a timer
+Documentation=https://github.com/YOUR-ORG/SOC-PROJECT/blob/main/README.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=30s
+# Don't let a laptop that was suspended fire ten queued scans at once.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

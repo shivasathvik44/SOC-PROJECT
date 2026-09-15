@@ -1,0 +1,105 @@
+# SentinelForge periodic scan - systemd oneshot service (Phase 9.3).
+#
+# Runs the existing, unmodified Phase 1-3 pipeline exactly as documented in
+# the README's "full read-only pipeline in one line":
+#
+#   sentinelforge collect --since <window> | sentinelforge detect - | \
+#       sentinelforge correlate - --db <incidents.db>
+#
+# No new orchestration logic was written for this: it is the same three CLI
+# commands a human would type, run on a timer (see sentinelforge-scan.timer)
+# instead of by hand. Re-running it is safe - the correlation engine already
+# deduplicates alerts by content (see correlation/engine.py::_alert_key), so
+# overlapping time windows between runs never create duplicate incidents.
+#
+# This is the ONLY component of Phase 9.3 that reads real log data, and it is
+# also the reason it is a *separate* unit from the dashboard: log collection
+# needs group membership the dashboard has no reason to have (see
+# SupplementaryGroups= below), and keeping the two processes apart means a
+# dashboard compromise cannot read logs it never had a handle to, and a
+# collection failure cannot take the console down.
+#
+# NOT installed automatically, and NOT enabled by systemctl enable on its
+# own - only its .timer unit should be enabled; this .service is what the
+# timer activates. See packaging/systemd/README.md.
+#
+# IMPORTANT: ExecStart= hardcodes /usr/local/bin/sentinelforge - see
+# sentinelforge-dashboard.service's header comment for why (systemd does not
+# expand environment variables in the executable position of ExecStart=) and
+# edit it if your install path differs.
+
+[Unit]
+Description=SentinelForge periodic log scan (collect -> detect -> correlate)
+Documentation=https://github.com/YOUR-ORG/SOC-PROJECT/blob/main/README.md
+After=network.target systemd-journald.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+User=sentinelforge
+Group=sentinelforge
+
+# Read access to the journal without root: on Fedora, membership in
+# systemd-journal is what journalctl actually checks. If your log source is
+# /var/log/secure or /var/log/auth.log instead, also add this user to
+# whichever group your distribution grants read access to those files
+# through (commonly 'adm') - see the README's "Fedora requirements" section.
+SupplementaryGroups=systemd-journal
+
+StateDirectory=sentinelforge
+WorkingDirectory=/var/lib/sentinelforge
+
+# Multi-word values must quote the WHOLE assignment (KEY=VALUE), not just the
+# value - `Environment=KEY=a b c` is a systemd syntax error, not "a b c".
+Environment="SENTINELFORGE_SCAN_WINDOW=10 minutes ago"
+EnvironmentFile=-/etc/sentinelforge/sentinelforge.env
+
+# A pipe failure anywhere in the three commands must fail the unit, not be
+# swallowed by the last command's exit code alone. This is the one unit in
+# this deployment that legitimately needs a shell, precisely because it pipes
+# three commands together the same way a human would at a terminal - no
+# untrusted input reaches it: SENTINELFORGE_SCAN_WINDOW comes only from this
+# file or the operator's own EnvironmentFile, never from telemetry.
+ExecStart=/bin/bash -o pipefail -c '\
+    /usr/local/bin/sentinelforge collect --since "${SENTINELFORGE_SCAN_WINDOW}" | \
+    /usr/local/bin/sentinelforge detect - | \
+    /usr/local/bin/sentinelforge correlate - --db /var/lib/sentinelforge/incidents.db --summary'
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinelforge-scan
+
+# A single scan that hangs (a stuck journalctl, say) must not block the next
+# one forever; the timer will simply try again at its next interval.
+TimeoutStartSec=120s
+
+# --- security hardening --------------------------------------------------
+# Slightly less restrictive than the dashboard: this unit legitimately runs
+# three subprocesses (collect/detect/correlate) piped together, and 'collect'
+# itself shells out to journalctl (see collector/journal.py) - so process
+# execution and the journal socket must be reachable. Filesystem and kernel
+# protections are otherwise identical to the dashboard's.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+
+# Not part of [Install]: this unit is activated by sentinelforge-scan.timer,
+# never enabled or started directly.

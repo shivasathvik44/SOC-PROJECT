@@ -18,6 +18,7 @@ in the kernel at all, not merely dropped later.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 from types import SimpleNamespace
 from typing import Iterator
@@ -32,6 +33,11 @@ LOGGER = logging.getLogger(__name__)
 #: bandwidth on every exec, so they stay small on purpose.
 ARGSIZE = 64
 MAX_ARGS = 5
+
+#: ``TASK_COMM_LEN`` from ``<linux/sched.h>``, the size ``comm``/``pcomm`` are
+#: declared with in the BPF program below.  It is a kernel ABI constant, not
+#: ours to change.
+TASK_COMM_LEN = 16
 
 # A kprobe on the execve syscall rather than a tracepoint: BCC generates
 # tracepoint argument structs by reading /sys/kernel/tracing/events/.../format,
@@ -135,10 +141,54 @@ def build_program(capture_args: bool = True) -> str:
     )
 
 
+class ExecEvent(ctypes.Structure):
+    """Mirrors the C ``struct exec_event_t`` above, field for field.
+
+    BCC's ``PerfEventArray.event()`` can build an equivalent ``ctypes``
+    structure on its own, but it does so dynamically at runtime (via
+    ``bcc.table._get_event_class``, introspecting BPF map metadata) and that
+    path can raise ``SystemExit``.  Defining the layout explicitly here means
+    decoding a perf record no longer goes through that machinery at all, and
+    any drift from ``exec_event_t`` shows up as a failing layout test instead
+    of a runtime surprise.
+    """
+
+    _fields_ = [
+        ("ts", ctypes.c_uint64),
+        ("pid", ctypes.c_uint32),
+        ("ppid", ctypes.c_uint32),
+        ("uid", ctypes.c_uint32),
+        ("gid", ctypes.c_uint32),
+        ("nargs", ctypes.c_int),
+        ("comm", ctypes.c_char * TASK_COMM_LEN),
+        ("pcomm", ctypes.c_char * TASK_COMM_LEN),
+        ("filename", ctypes.c_char * (ARGSIZE * 2)),
+        ("argv", (ctypes.c_char * ARGSIZE) * MAX_ARGS),
+    ]
+
+
+def decode_exec_record(data, size: int) -> ExecEvent:
+    """Cast one raw perf-buffer record to :class:`ExecEvent`.
+
+    ``data`` is whatever the perf-buffer callback handed us: in production, an
+    address (an ``int``, as BCC's ``ctypes.CFUNCTYPE`` callback delivers a
+    ``c_void_p`` argument); in tests, anything ``ctypes.cast`` accepts,
+    including a plain ``bytes`` buffer. ``size`` is the number of bytes the
+    kernel says it submitted. A record shorter than ``ExecEvent`` is rejected
+    up front rather than read out of bounds.
+    """
+    expected = ctypes.sizeof(ExecEvent)
+    if not data or size < expected:
+        raise ValueError(f"truncated exec record: {size} bytes, need {expected}")
+    return ctypes.cast(data, ctypes.POINTER(ExecEvent)).contents
+
+
 def _text(value) -> str | None:
     """Decode a NUL-terminated kernel buffer into text, or ``None`` when empty."""
     if value is None:
         return None
+    if isinstance(value, ctypes.Array):
+        value = bytes(value)
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
     value = str(value).strip()
@@ -329,9 +379,12 @@ class EbpfProcessSensor(Sensor):
     def _handle_event(self, cpu, data, size) -> None:
         # Reading the perf record is itself fallible (a truncated or unexpected
         # record), so it belongs inside the guard: a bad record from the kernel
-        # must never end the poll loop.
+        # must never end the poll loop.  Decoding is a direct ctypes cast
+        # against the fixed ExecEvent layout, not BCC's PerfEventArray.event()
+        # (which builds its structure dynamically and can raise SystemExit) --
+        # a normal exec record no longer goes near that path at all.
         try:
-            raw = self._bpf["exec_events"].event(data)
+            raw = decode_exec_record(data, size)
             event = decode_process_event(
                 raw,
                 host=self.host,
@@ -382,3 +435,39 @@ def synthetic_record(**overrides) -> SimpleNamespace:
     for key, value in overrides.items():
         setattr(record, key, value)
     return record
+
+
+def synthetic_exec_event(**overrides) -> ExecEvent:
+    """Build a real, populated :class:`ExecEvent` for tests that exercise the
+    manual wire-format decoder end to end, mirroring :func:`synthetic_record`'s
+    default field values so the two can be asserted against identically.
+    """
+    fields = dict(
+        ts=0,
+        pid=4101,
+        ppid=4100,
+        uid=1000,
+        gid=1000,
+        nargs=2,
+        comm=b"curl",
+        pcomm=b"bash",
+        filename=b"/usr/bin/curl",
+        argv=[b"curl", b"http://198.51.100.9/x.sh"],
+    )
+    fields.update(overrides)
+    argv = fields.pop("argv")
+
+    event = ExecEvent(
+        ts=fields["ts"],
+        pid=fields["pid"],
+        ppid=fields["ppid"],
+        uid=fields["uid"],
+        gid=fields["gid"],
+        nargs=fields["nargs"],
+        comm=fields["comm"],
+        pcomm=fields["pcomm"],
+        filename=fields["filename"],
+    )
+    for index, value in enumerate(argv[:MAX_ARGS]):
+        event.argv[index].value = value
+    return event

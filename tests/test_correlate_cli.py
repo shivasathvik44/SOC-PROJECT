@@ -293,8 +293,16 @@ class TestEndToEnd:
         """Backwards compatibility: Phase 3 must not break the old commands."""
         assert main(["rules"]) == 0
         assert "SSH_BRUTE_FORCE" in capsys.readouterr().out
-        assert main(["sources"]) == 0
-        capsys.readouterr()
+
+        # 'sources' reports readiness through its exit code (0 only if a real
+        # log source is usable on this machine, 1 otherwise - see cli.py's
+        # run_sources) rather than through command success. A minimal
+        # container with no journald and no auth log file present at all
+        # legitimately returns 1 here; what "still works" means is that the
+        # command runs and reports, not that this machine has a log source.
+        # Found by Phase 9.2's fresh-container validation, which has neither.
+        assert main(["sources"]) in (0, 1)
+        assert "journal" in capsys.readouterr().out
 
         events_file = tmp_path / "events.jsonl"
         events_file.write_text(failed_ssh(0).to_json() + "\n")

@@ -78,10 +78,16 @@ SCENARIO = Scenario(
         techniques=frozenset({"T1059", "T1059.004"}),
         users=frozenset({"root"}),
         response_options=frozenset({"kill_process"}),
-        process_tree_pids=frozenset({SSHD_PID, SHELL_PID, SUDO_PID, CURL_PID, PAYLOAD_PID}),
+        # What the incident-scoped process tree can actually show: the
+        # alerting process and the parent its own telemetry names.
+        process_tree_pids=frozenset({CURL_PID, PAYLOAD_PID}),
+        # What it cannot: the earlier, non-alerting links.  See the note.
+        process_tree_missing_pids=frozenset({SSHD_PID, SHELL_PID, SUDO_PID}),
         notes=(
-            "Four observed processes plus sshd, which is named by its child's "
-            "telemetry and is therefore shown as an unobserved parent."
+            "The sensors observed five processes; the incident's evidence is the "
+            "one alerting execve, so the tree shows sh and the curl its telemetry "
+            "names, and the bash/sudo/sshd ancestry is not rendered. That gap is "
+            "a documented limitation, pinned by dashboard.process_tree_gap."
         ),
     ),
 )

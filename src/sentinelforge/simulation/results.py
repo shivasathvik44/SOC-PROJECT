@@ -95,26 +95,27 @@ def equals(name: str, expected, observed, detail: str = "") -> Check:
 def contains_all(name: str, expected, observed, detail: str = "") -> Check:
     """Pass when every item of ``expected`` appears in ``observed``."""
     wanted, got = set(expected), set(observed)
-    missing = sorted(wanted - got)
+    missing = sorted(wanted - got, key=str)
     return Check(
         name,
         wanted,
         got,
         not missing,
-        detail or (f"missing: {', '.join(missing)}" if missing else ""),
+        detail or (f"missing: {', '.join(str(item) for item in missing)}" if missing else ""),
     )
 
 
 def contains_none(name: str, forbidden, observed, detail: str = "") -> Check:
     """Pass when no item of ``forbidden`` appears in ``observed``."""
     banned, got = set(forbidden), set(observed)
-    present = sorted(banned & got)
+    present = sorted(banned & got, key=str)
     return Check(
         name,
-        f"none of {sorted(banned)}" if banned else "nothing forbidden",
+        f"none of {sorted(banned, key=str)}" if banned else "nothing forbidden",
         got,
         not present,
-        detail or (f"unexpectedly fired: {', '.join(present)}" if present else ""),
+        detail
+        or (f"unexpectedly fired: {', '.join(str(item) for item in present)}" if present else ""),
     )
 
 
@@ -205,6 +206,7 @@ class ScenarioResult:
     name: str
     kind: str
     description: str = ""
+    notes: str = ""
     mitre_techniques: tuple[str, ...] = ()
     stages: list[StageResult] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
@@ -264,6 +266,7 @@ class ScenarioResult:
             "name": self.name,
             "kind": self.kind,
             "description": self.description,
+            "notes": self.notes,
             "mitre_techniques": list(self.mitre_techniques),
             "result": self.verdict,
             "checks_total": len(self.checks),

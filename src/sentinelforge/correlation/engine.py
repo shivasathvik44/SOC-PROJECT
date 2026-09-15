@@ -123,6 +123,14 @@ def _techniques(alert: Alert) -> set[str]:
     return {mitre.get("technique_id"), mitre.get("sub_technique_id")} - {None}
 
 
+def _incident_techniques(incident: Incident) -> set[str]:
+    """Every ATT&CK id already present in an incident, as one set."""
+    found: set[str] = set()
+    for alert in incident.alerts:
+        found |= _techniques(alert)
+    return found
+
+
 class CorrelationEngine:
     """Groups related alerts into :class:`Incident` objects.
 
@@ -133,6 +141,30 @@ class CorrelationEngine:
     def __init__(self, config: CorrelationConfig | None = None) -> None:
         self.config = config or CorrelationConfig()
         self.stats = CorrelationStats()
+        # incident_id -> (alerts seen when built, technique union).  Correlating
+        # one alert used to re-derive every other alert's ATT&CK ids, which made
+        # a long-running incident quadratic in its own size; this memoizes the
+        # derived set and rebuilds it whenever the incident grows.
+        self._techniques_by_incident: dict[str, tuple[int, set[str]]] = {}
+
+    def _technique_index(self, incident: Incident) -> set[str]:
+        """The incident's ATT&CK ids, derived once and then extended in place.
+
+        The cached entry records how many alerts it was built from.  While this
+        engine is the only thing adding alerts (:meth:`_attach` keeps the entry
+        in step) the union is never recomputed; an incident that arrived from
+        somewhere else -- loaded from the database, or built by a caller -- is
+        indexed once on first use.
+        """
+        cached = self._techniques_by_incident.get(incident.incident_id)
+        if cached is not None and cached[0] == len(incident.alerts):
+            return cached[1]
+        techniques = _incident_techniques(incident)
+        self._techniques_by_incident[incident.incident_id] = (
+            len(incident.alerts),
+            techniques,
+        )
+        return techniques
 
     # -- public API --------------------------------------------------------
     def run(
@@ -155,6 +187,7 @@ class CorrelationEngine:
             Every incident that was created or updated, in chronological order.
         """
         self.stats = CorrelationStats()
+        self._techniques_by_incident = {}
         prepared = self._prepare(alerts)
 
         incidents: list[Incident] = list(existing_incidents or [])
@@ -245,9 +278,10 @@ class CorrelationEngine:
             reasons.append(f"same account '{alert.user}'")
 
         # -- supporting signals --------------------------------------------
-        shared = set()
-        for existing in incident.alerts:
-            shared |= _techniques(alert) & _techniques(existing)
+        # The union of the intersections with each existing alert is exactly
+        # the intersection with the union, so this asks the same question as a
+        # scan over ``incident.alerts`` -- in constant time instead of linear.
+        shared = _techniques(alert) & self._technique_index(incident)
         if shared:
             reasons.append("shared ATT&CK technique " + ", ".join(sorted(shared)))
         chain_related = self._chain_related(alert, incident)
@@ -372,7 +406,14 @@ class CorrelationEngine:
         :meth:`finalize`: the correlation window for the next alert is measured
         against ``last_seen``, so it must be current while the run proceeds.
         """
+        # Extend the technique index before the alert lands, so the cached
+        # union stays in step with the alert count without a rescan.
+        techniques = self._technique_index(incident) | _techniques(alert)
         incident.alerts.append(alert)
+        self._techniques_by_incident[incident.incident_id] = (
+            len(incident.alerts),
+            techniques,
+        )
         if alert.timestamp:
             if not incident.first_seen or alert.timestamp < incident.first_seen:
                 incident.first_seen = alert.timestamp

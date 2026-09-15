@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinelforge"
-version = "0.7.0"
-description = "SentinelForge: Linux log collection, event normalization, threat detection, incident correlation, eBPF telemetry, an AI SOC analyst, a local SOC dashboard and a human-approved response engine"
+version = "1.0.0rc1"
+description = "SentinelForge: Linux log collection, event normalization, threat detection, incident correlation, eBPF telemetry, an AI SOC analyst, a local SOC dashboard, a human-approved response engine and a purple-team attack simulator"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-keywords = ["security", "soc", "logs", "linux", "systemd", "journald", "ebpf", "llm", "dashboard", "incident-response", "containment", "firewalld"]
+keywords = ["security", "soc", "logs", "linux", "systemd", "journald", "ebpf", "llm", "dashboard", "incident-response", "containment", "firewalld", "purple-team", "attack-simulation", "benchmarking", "mitre-attack"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: System Administrators",
@@ -29,15 +29,42 @@ dependencies = []
 # development server.  The dashboard streams updates with plain Server-Sent
 # Events, so no async stack, no websocket library and no frontend build system
 # is required.
-dashboard = ["flask>=3.0"]
-llm = ["openai>=1.0"]
-dev = ["pytest>=7.0", "flask>=3.0"]
+#
+# Phase 9.2 bounded every optional dependency below its next untested major
+# version, rather than leaving a bare floor. This is not guesswork: each
+# ceiling sits one major version above a version that was actually installed
+# and exercised in this phase (Flask 3.1.3 against every dashboard route;
+# pytest 9.1.1 against the whole suite; the real `openai` SDK 3.13.0 -
+# constructed, and its exact chat.completions.create(...) call shape proven
+# accepted end to end through sentinelforge.ai.providers.openai.OpenAIProvider
+# against a real, unreachable endpoint - see the Phase 9.2 report). A future
+# major release the project has not run against is excluded on purpose: an
+# untested breaking change should be a deliberate version bump, not something
+# a fresh `pip install` picks up silently.
+dashboard = ["flask>=3.0,<4.0"]
+llm = ["openai>=1.0,<4.0"]
+dev = ["pytest>=7.0,<10.0", "flask>=3.0,<4.0"]
 
 [project.scripts]
 sentinelforge = "sentinelforge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The dashboard (Phase 6) ships Jinja2 templates and static CSS/JS alongside
+# its Python modules.  setuptools only packages .py files by default, so
+# without this the templates and static assets are silently missing from a
+# built wheel or sdist: the CLI still installs and every non-dashboard command
+# works, but 'sentinelforge dashboard' 500s on its first request with
+# jinja2.exceptions.TemplateNotFound. This has no effect on an editable
+# install ('pip install -e .'), which imports directly from the source tree -
+# it only matters for the wheel/sdist a real release ships.
+[tool.setuptools.package-data]
+"sentinelforge.dashboard" = [
+    "templates/*.html",
+    "static/css/*.css",
+    "static/js/*.js",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
