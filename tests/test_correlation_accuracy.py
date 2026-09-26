@@ -40,7 +40,7 @@ def _alerts(make_alert, *specs):
 
 @pytest.fixture
 def make_alert():
-    from tests.conftest import make_alert as factory
+    from conftest import make_alert as factory
 
     return factory
 

@@ -171,7 +171,7 @@ class TestNoPathFromDataToExecution:
     def test_no_command_is_built_by_string_concatenation(self):
         """Commands are lists; a command built from an f-string would show here."""
         from sentinelforge.response.backends.firewall import FirewalldBackend
-        from tests.test_response_backends import ScriptedRunner
+        from test_response_backends import ScriptedRunner
 
         backend = FirewalldBackend(runner=ScriptedRunner(["no", "", "yes"]), zone="public")
         backend.block_ip("203.0.113.50", "ACTION-00001", 900)
@@ -243,7 +243,7 @@ class TestDestructiveOperationsAreAbsent:
 
     def test_only_two_firewall_subcommands_are_ever_used(self):
         from sentinelforge.response.backends.firewall import FirewalldBackend
-        from tests.test_response_backends import ScriptedRunner
+        from test_response_backends import ScriptedRunner
 
         backend = FirewalldBackend(runner=ScriptedRunner(["running", "no", "", "yes", "yes", "", "no"]),
                                    zone="public")

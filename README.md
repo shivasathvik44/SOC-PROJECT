@@ -58,6 +58,34 @@ the machine SentinelForge is monitoring.
 
 ---
 
+## Quick start
+
+SentinelForge is a **self-hosted, single-machine Linux application** - there is
+no server to sign up for, no account, and no data leaves your machine unless
+you deliberately configure a hosted AI provider (see
+[Configuring a provider](#configuring-a-provider)). You run it on the same
+Linux box you want to monitor.
+
+```bash
+git clone https://github.com/shivasathvik44/SOC-PROJECT.git sentinelforge
+cd sentinelforge
+./install.sh                          # creates .venv/, installs the CLI + dashboard
+
+.venv/bin/sentinelforge --version
+.venv/bin/sentinelforge simulate all --report   # safe, synthetic, no privilege needed
+.venv/bin/sentinelforge dashboard --demo        # http://127.0.0.1:8080, synthetic data
+```
+
+That is the whole install. Everything above runs as an ordinary user, touches
+nothing outside this checkout, and uses only synthetic data - it is the right
+way to try SentinelForge before pointing it at real telemetry. See
+[Installation](#installation) for what `./install.sh` does and its options,
+and [Basic usage](#basic-usage) for pointing it at your real journal. eBPF
+telemetry, systemd deployment, a hosted AI provider, and real firewall/session
+containment are all optional and covered later in this README.
+
+---
+
 ## What Phase 1 does
 
 1. **Collects** security-relevant logs from:
@@ -449,7 +477,12 @@ never changes.
 sentinelforge/
 ├── README.md
 ├── pyproject.toml
+├── install.sh                     # clone -> install path for a new user
 ├── .gitignore
+├── scripts/                       # maintainer tooling (not shipped in the wheel)
+│   ├── install-systemd-service.sh
+│   └── validate-deployment.sh
+├── packaging/systemd/              # unit files (not shipped in the wheel)
 ├── src/
 │   └── sentinelforge/
 │       ├── __init__.py
@@ -687,10 +720,38 @@ them, using synthetic or file-based data.
 
 ### Installing
 
-```bash
-git clone https://github.com/<your-fork>/SOC-PROJECT.git sentinelforge
-cd sentinelforge
+The recommended path is the installer script at the repository root:
 
+```bash
+git clone https://github.com/shivasathvik44/SOC-PROJECT.git sentinelforge
+cd sentinelforge
+./install.sh
+```
+
+`install.sh` checks that the platform is Linux and Python is 3.9+, creates a
+virtual environment at `.venv/` (reusing one that already exists, so it is
+safe to re-run), and installs SentinelForge plus the `dashboard` extra into
+it - the CLI is then at `.venv/bin/sentinelforge`. It never touches anything
+outside this checkout, never requests root, and never modifies your shell
+profile. Run `./install.sh --help` for its options, the most useful being:
+
+```bash
+./install.sh --dry-run              # show the plan, change nothing
+./install.sh --extras none          # core only, no dashboard extra
+./install.sh --extras dashboard,llm # + the OpenAI-compatible provider
+./install.sh --extras dev           # + pytest, to run the test suite
+./install.sh --editable             # 'pip install -e' instead - git pull takes
+                                     # effect without reinstalling
+./install.sh --link                 # also symlink the CLI into ~/.local/bin,
+                                     # so 'sentinelforge' works with no venv
+                                     # activation (opt-in; never automatic)
+```
+
+If you would rather do it by hand, or need more control (a different venv
+tool, a system-wide install, CI), the installer does nothing you cannot do
+yourself:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -705,9 +766,9 @@ pip install -e ".[dev]"             # + pytest, to run the test suite
 
 `pip install -e .` is an **editable** install: SentinelForge runs from this
 checkout, and `git pull` picks up changes immediately. For a non-editable
-install (what a packaged release or a production deployment would use), drop
-the `-e`: `pip install ".[dashboard]"`. Both install the dashboard's templates
-and static assets correctly.
+install (what `install.sh` does by default, and what a packaged release or a
+production deployment would use), drop the `-e`: `pip install ".[dashboard]"`.
+Both install the dashboard's templates and static assets correctly.
 
 You can also run it with no installation step at all:
 
@@ -893,7 +954,8 @@ This is the answer task 4 of Phase 9.3 asked for, stated plainly:
 | Log collection from the journal (Phase 1) | **No** | Membership in the `systemd-journal` group |
 | Log collection from `/var/log/secure` (Phase 1) | **No**, on hosts that grant a group read access to it | Membership in whatever group your distribution uses (commonly `adm`) - root only if your host grants neither |
 | Detection, correlation, the AI mock provider, the Phase 8 simulator, `benchmark` | **No** | Nothing - pure computation over data already collected |
-| eBPF process/network sensors (Phase 4) | **No**, with a 5.8+ kernel | `CAP_BPF` + `CAP_PERFMON` (see `sensors/ebpf/loader.py::has_bpf_privileges()`) - root only as an older-kernel fallback |
+| eBPF process sensor (Phase 4) | **No**, with a 5.8+ kernel | `CAP_BPF` + `CAP_PERFMON` (see `sensors/ebpf/loader.py::has_bpf_privileges()`) - root only as an older-kernel fallback |
+| eBPF network sensor (Phase 4) | **Usually yes, in practice** - see below | `CAP_BPF` + `CAP_PERFMON` in principle, but BCC also needs to read `/sys/kernel/tracing/events/sock/inet_sock_set_state/format` to build the tracepoint it attaches to; on a host where that directory is `0700 root:root` (the Fedora default, no `gid=` mount option), no capability pair gets past it - only real root can |
 | `response execute` on `block_ip`/`unblock_ip`/`terminate_session`/`isolate_host` | **Yes** | Real root, to run `firewall-cmd`/`loginctl` - there is no capability-based alternative implemented for these, and the code checks `is_root()` directly |
 | `response execute` on `kill_process` | **Only if** the target process belongs to a different user than SentinelForge is running as | Otherwise, none |
 | `ai analyze` against the offline mock provider | **No** | Nothing - no network, no key |
@@ -901,7 +963,52 @@ This is the answer task 4 of Phase 9.3 asked for, stated plainly:
 The systemd units reflect this table directly: nothing here runs as root
 except the two optional eBPF units, and even those use the narrower
 capability pair the code itself already checks for, not root, wherever the
-kernel supports it.
+kernel supports it. The one exception is the network sensor on a
+root-only-tracefs host - see the next section.
+
+### Why network eBPF is manual, not a service
+
+The process sensor uses a kprobe, which needs nothing from the tracing
+filesystem, so `CAP_BPF` + `CAP_PERFMON` is genuinely enough for it to run
+continuously as `sentinelforge-ebpf-process.service` (see the table above).
+It has been validated this way on a real Fedora 44 kernel.
+
+The network sensor is different: it attaches to the `sock:inet_sock_set_state`
+*tracepoint*, and BCC must read that tracepoint's `format` file under
+`/sys/kernel/tracing/events/` to build the argument struct before it can even
+compile. On Fedora 44, `/sys/kernel/tracing` itself is `0700 root:root` with
+no `gid=` mount option, so `CAP_BPF`/`CAP_PERFMON` - which grant BPF
+operations, not filesystem access - do not help: only root can read that
+directory. This has also been confirmed live on a real Fedora 44 host.
+
+`packaging/systemd/sentinelforge-ebpf-network.service` does ship a
+commented-out `User=root` fallback for exactly this situation. Deliberately,
+v1 does not uncomment it and turn that into a standing service. Every other
+component in this deployment needs no privilege at all, or needs root only
+for the few seconds a human is running a single approved command (see
+["Why there is no response service"](#why-there-is-no-response-service)
+below) - never a persistent root daemon. Making the network sensor an
+exception to that, just because one host's tracefs permissions happen to
+require it, would introduce the one thing this deployment has otherwise
+avoided everywhere: a long-lived process running as root. A telemetry stream
+labeled "optional, advanced" in its own unit file is not worth that trade.
+
+So for v1, the network sensor stays a manual, root-invoked command instead of
+a unit:
+
+```bash
+# 'sudo' resets $PATH by default, so it will not find an activated venv's
+# 'sentinelforge' - give it the full path to the one you installed with
+# ./install.sh (recreated with --system-site-packages, per step 4 above):
+sudo "$(pwd)/.venv/bin/sentinelforge" sensor start ebpf-network --limit 5
+```
+
+This means network telemetry is **not continuous** - it only runs, and only
+sees outbound connections, while an operator is actively running that
+command. That is a real coverage gap compared with the always-on process
+sensor, accepted on purpose in exchange for never running an unattended root
+process. It is not a claim that network connections are monitored
+continuously in this deployment.
 
 ### Why there is no response service
 
@@ -4299,28 +4406,62 @@ machine.
   `response execute` or `ai analyze`; both remain manual, human-invoked
   commands, matching the Phase 7 safety model exactly.
 
+### Done in Phase 9.4
+
+- **Real eBPF telemetry, on a real, privileged Fedora 44 host** (kernel
+  `7.1.13-200.fc44.x86_64`, BCC 0.35.0, BTF and `bpffs` available, `CAP_BPF` +
+  `CAP_PERFMON` granted) - the positive path Phase 9.2 could not reach because
+  its sandbox had no privileged host or real kernel access to grant a
+  container. `sentinelforge sensor start ebpf-process`
+  produced real process-execution events; the fixed-layout `ExecEvent`
+  ctypes struct and `decode_exec_record()` this required (BCC's dynamic
+  `.event()` decoding could not handle a `char argv[MAX_ARGS][ARGSIZE]`
+  field) are what `sensors/ebpf/process.py` ships today.
+  `sentinelforge sensor start ebpf-network` produced real IPv4 and IPv6
+  outbound connection events the same way; this run is also what found that
+  `/sys/kernel/tracing` is `0700 root:root` on Fedora 44, which is why the
+  network sensor stays a manual, root-invoked command rather than a systemd
+  unit - see ["Why network eBPF is manual, not a
+  service"](#why-network-ebpf-is-manual-not-a-service) above.
+- **A real, end-to-end, non-synthetic telemetry-to-dashboard chain**,
+  observed live on that same host rather than constructed for this report:
+  the `sentinelforge-scan.timer` already installed there fires
+  `collect | detect | correlate` against the real system journal on its own
+  schedule, and its output is what the running `sentinelforge-dashboard`
+  serves. `curl http://127.0.0.1:8080/api/incidents` on that host returns a
+  real, previously-created incident (`INC-000001`, rule `SUSPICIOUS_SUDO`)
+  built entirely from real journal telemetry, not a fixture. Collection and
+  normalization were also re-verified directly in this phase: `sentinelforge
+  collect` against a two-day journal window returned 22,348 real, normalized
+  events, and `sentinelforge detect` processed all of them (0 skipped, 0
+  alerts - correctly, since that window held no rule-matching activity). No
+  new alert was manufactured for this report: `sshd` is not running on this
+  host, and starting it, or otherwise staging an attack, was judged out of
+  scope for a documentation task.
+- **A pytest invocation inconsistency, fixed.** `tests/test_correlation_accuracy.py`
+  and `tests/test_response_security.py` imported test helpers with an
+  absolute `from tests.conftest import ...` / `from tests.test_response_backends
+  import ...`, which only resolved under `python -m pytest` (whose `-m` flag
+  incidentally prepends the repository root to `sys.path`) and not under the
+  `pytest` console-script entry point, which does not. Every other test
+  module in the suite already used the plain `from conftest import ...` form
+  that both invocations support, since `tests/` carries no `__init__.py` and
+  pytest puts `tests/` itself on `sys.path`; the two outliers were changed to
+  match that existing convention instead of adding an `__init__.py` (which
+  would have inverted the problem: it moves pytest's import root up to the
+  repository root, which fixes those two files but breaks the other sixteen
+  that rely on `tests/` being on `sys.path` directly). No test was removed,
+  weakened, or given new behavior - only how two files locate a sibling
+  module changed. `pytest` and `python -m pytest` now both collect and pass
+  the identical 1,936 tests.
+
 ### Still open
 
-1. **The two eBPF systemd units against a real, privileged kernel, and real
-   firewalld/logind containment run as an actual systemd service** -
-   Phase 9.3 verified the *unprivileged* units (dashboard, scan) end to end,
-   but shipping a *privileged* unit correctly is not the same claim as having
-   run it: items 2 and 3 below remain exactly as open as Phase 9.2 left them,
-   for the same sandbox limitation.
-2. **Verify on at least one additional distribution** (Debian/Ubuntu with
+1. **Verify on at least one additional distribution** (Debian/Ubuntu with
    `apt`, or an RPM-based distro other than Fedora) - Phase 9.2 validated
    Fedora 44 only. Narrow the "supported platform" claim if this does not
    happen before `1.0.0`.
-3. **Real eBPF telemetry on a real kernel, with root and the distro `bcc`
-   package.** Phase 9.2's fresh-container run confirmed graceful *degradation*
-   in an environment with no `bcc` package at all (a stronger negative-path
-   test than this dev machine's own "installed but not venv-visible" case) -
-   it did not, and structurally could not, confirm the *positive* path,
-   because the sandbox this session runs in has no privileged host or real
-   kernel access available to grant a container. Confirm
-   `sentinelforge sensor start ebpf-process` produces real events on a real,
-   privileged host before `1.0.0`.
-4. **Real firewalld and logind containment**, executed once deliberately by a
+2. **Real firewalld and logind containment**, executed once deliberately by a
    human on a disposable machine or VM (never on a host you depend on) -
    `sentinelforge response request block_ip <test-address>`, approve, execute,
    verify, roll back - against the real `firewall-cmd` and `loginctl`. Phase
@@ -4328,10 +4469,10 @@ machine.
    correctly; it did not exercise the real backends, which needs a host that
    actually runs firewalld and logind and a human willing to test containment
    on it.
-5. **A packaging decision**: publish to PyPI, ship as a distro package (an RPM
+3. **A packaging decision**: publish to PyPI, ship as a distro package (an RPM
    spec, if Fedora is the primary target), or keep git-clone-and-`pip install`
    as the supported path. Not chosen.
-6. **A named copyright holder in `LICENSE`.** Reviewed again in Phase 9.2: no
+4. **A named copyright holder in `LICENSE`.** Reviewed again in Phase 9.2: no
    `authors`/`maintainers` field in `pyproject.toml`, no `AUTHORS`/`NOTICE`
    file, no byline in this README - nothing in the repository's own content
    names a project identity, so the generic "SentinelForge Contributors"
@@ -4381,7 +4522,7 @@ test could have surfaced, because the results were correct, just increasingly
 slowly.
 
 ```bash
-pytest                          # every layer: 1,847 tests
+pytest                          # every layer: 1,936 tests
 sentinelforge simulate all      # layer 3, on its own
 sentinelforge benchmark         # layer 4, on its own
 sentinelforge simulate all --report   # all of it, written to reports/phase8/

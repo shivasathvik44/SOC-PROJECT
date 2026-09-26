@@ -39,6 +39,7 @@ LOGGER = logging.getLogger(__name__)
 
 BPF_PROGRAM = r"""
 #include <uapi/linux/ptrace.h>
+#include <linux/sched.h>
 
 #define AF_INET  2
 #define AF_INET6 10

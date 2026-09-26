@@ -19,9 +19,35 @@ privileges each unit needs and why.
 | `sentinelforge-dashboard.service` | `sentinelforge dashboard` | none (dedicated unprivileged user) |
 | `sentinelforge-scan.service` | `collect \| detect \| correlate`, one run | none beyond `systemd-journal` group membership |
 | `sentinelforge-scan.timer` | triggers `sentinelforge-scan.service` on a schedule | none - only reads the clock |
-| `sentinelforge-ebpf-process.service` | `sentinelforge sensor start ebpf-process` | `CAP_BPF` + `CAP_PERFMON` (optional, advanced, disabled by default) |
-| `sentinelforge-ebpf-network.service` | `sentinelforge sensor start ebpf-network` | `CAP_BPF` + `CAP_PERFMON` (optional, advanced, disabled by default) |
+| `sentinelforge-ebpf-process.service` | `sentinelforge sensor start ebpf-process` | `CAP_BPF` + `CAP_PERFMON` (optional, advanced, disabled by default) - validated on a real Fedora 44 kernel |
+| `sentinelforge-ebpf-network.service` | `sentinelforge sensor start ebpf-network` | `CAP_BPF` + `CAP_PERFMON` in principle, but usually **root in practice** - see below. Shipped as packaging material only; not installed or enabled in v1 |
 | `sentinelforge.env.example` | shared, optional environment file | n/a - contains no real values |
+
+### Why the network unit is not installed in v1
+
+The process sensor's `CAP_BPF` + `CAP_PERFMON` model has been validated end to
+end on a real Fedora 44 kernel. The network sensor attaches to a tracepoint
+instead of a kprobe, and BCC needs to read that tracepoint's `format` file
+under `/sys/kernel/tracing/events/` to compile against it. On Fedora 44 that
+whole directory is `0700 root:root`, so the capability pair - which governs
+BPF operations, not filesystem access - does not help; only root can read it.
+This unit does carry a commented-out `User=root` fallback for exactly that
+case, but v1 does not uncomment it and enable this as a standing root
+service: every other privileged operation in this deployment is either
+capability-scoped or a one-off command a human runs with `sudo`, never an
+unattended root daemon, and this unit would be the only exception. Instead,
+run the network sensor manually when you need it:
+
+```bash
+# 'sudo' resets $PATH, so give it the full path to your installed venv's
+# 'sentinelforge' rather than relying on an activated venv being visible to it:
+sudo "$(pwd)/.venv/bin/sentinelforge" sensor start ebpf-network --limit 5
+```
+
+Network telemetry is therefore not continuous in this deployment - only the
+process sensor is meant to run as an always-on unit. See the main
+[README.md](../../README.md)'s "Why network eBPF is manual, not a service"
+section for the full reasoning.
 
 ## What is deliberately not here
 

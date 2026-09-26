@@ -159,6 +159,127 @@ told to be. **Not verified**: the two eBPF units against a real, privileged
 kernel - this project's validation sandbox has no privileged eBPF-capable
 host, the same limitation noted throughout Phase 9.
 
+### Phase 9.4: real eBPF validation and a test-harness fix
+
+**No detection, correlation, AI, simulation, response, or eBPF sensor
+*behavior* changed.** This phase closed the one gap Phase 9.3 explicitly
+could not (a privileged eBPF-capable host was not available to that sandbox),
+and fixed a latent test-import inconsistency found while reproducing the
+suite's own documented pass count.
+
+#### Fixed
+
+- `sensors/ebpf/process.py`: real execution on a privileged Fedora 44 host
+  showed BCC's dynamic `.event()` decoding cannot handle a
+  `char argv[MAX_ARGS][ARGSIZE]` field. Replaced with a fixed-layout
+  `ExecEvent` ctypes structure and `decode_exec_record()`, decoded against a
+  known struct size instead of BCC's runtime type introspection. `--no-args`
+  continues to compile argument capture out of the BPF program entirely
+  rather than merely redact it afterward.
+- `sensors/ebpf/network.py`: added the missing `#include <linux/sched.h>`
+  the `sock:inet_sock_set_state` tracepoint program needs to compile.
+- `tests/test_correlation_accuracy.py` and `tests/test_response_security.py`
+  imported a test helper module with an absolute `from tests.conftest
+  import ...` / `from tests.test_response_backends import ...`. That import
+  only resolves under `python -m pytest`, whose `-m` flag incidentally
+  prepends the repository root to `sys.path`; the `pytest` console-script
+  entry point does not do this, so a plain `pytest` invocation failed both
+  files with `ModuleNotFoundError: No module named 'tests'`. Changed both to
+  the plain `from conftest import ...` / `from test_response_backends import
+  ...` form every other test module already uses (`tests/` itself, not the
+  repository root, is what pytest puts on `sys.path` for a directory with no
+  `__init__.py`). No test was removed or weakened; `pytest` and
+  `python -m pytest` now collect and pass the identical 1,936 tests.
+
+#### Verified
+
+- **Real process eBPF telemetry**, on a real Fedora 44 host (kernel
+  `7.1.13-200.fc44.x86_64`, BCC 0.35.0, BTF and `bpffs` present, `CAP_BPF` +
+  `CAP_PERFMON` granted): `sentinelforge sensor start ebpf-process` compiled,
+  attached, and produced real process-execution events. The
+  `sentinelforge-ebpf-process.service` unit installs correctly and stays
+  disabled/inactive by default, exactly as designed.
+- **Real network eBPF telemetry**, same host: `sentinelforge sensor start
+  ebpf-network` produced real IPv4 and IPv6 outbound-connection events. This
+  run is also what confirmed `/sys/kernel/tracing` is `0700 root:root` on
+  Fedora 44 with no `gid=` mount option, so `CAP_BPF`/`CAP_PERFMON` cannot
+  substitute for root there; the network sensor deliberately remains a
+  manual, root-invoked command rather than a systemd unit in v1 (see the
+  README's "Why network eBPF is manual, not a service").
+- **A real telemetry-to-dashboard chain, observed live, not constructed**:
+  on that same host, the installed `sentinelforge-scan.timer` runs
+  `collect | detect | correlate` against the real system journal on its own
+  schedule, and the running `sentinelforge-dashboard` serves what it writes;
+  `/api/incidents` returned a real, previously-created incident
+  (`INC-000001`, rule `SUSPICIOUS_SUDO`) built from real journal telemetry.
+  Collection and detection were re-run directly in this phase against a
+  real two-day journal window (22,348 events, 0 skipped, 0 new alerts -
+  correctly, since no rule-matching activity occurred in that window).
+  **Not performed**: manufacturing a new alert for this report - `sshd` is
+  not running on this host, and starting it, or otherwise staging an attack
+  outside its own architecture, was out of scope.
+- Full suite re-run after the fixes above: `1,936 passed` via both `pytest`
+  and `python -m pytest`, from the repository root and from an unrelated
+  working directory.
+
+### Phase 9.5: GitHub clone-and-run installer
+
+**No detection, correlation, AI, response, dashboard, or eBPF sensor behavior
+changed.** Closes the remaining gap for a GitHub user with no prior context on
+this project: there was no single, obvious "clone it and install it" command,
+and two documentation examples hardcoded a maintainer's own
+`/opt/sentinelforge/venv-ebpf` path where a generic one belonged.
+
+#### Added
+
+- `install.sh`: a repository-root installer for `git clone -> ./install.sh`.
+  Checks the platform is Linux and Python is 3.9+, creates (or reuses)
+  `.venv/`, installs SentinelForge plus the `dashboard` extra into it by
+  default, and prints the exact next commands. Options: `--extras`
+  (`dashboard`/`llm`/`dev`/`none`), `--editable`, `--link [DIR]` (opt-in
+  symlink into `~/.local/bin`), `--systemd-units LIST` (opt-in hand-off to
+  `scripts/install-systemd-service.sh`), `--python`, `--recreate`,
+  `--dry-run`. Touches nothing outside the checkout (and `~/.local/bin` only
+  with `--link`), never modifies a shell profile, and never requests root
+  unless `--systemd-units` is passed - which itself hands off to the
+  already-reviewed installer that prompts before changing anything.
+- README: a "Quick start" section right after the phase summary, showing the
+  complete `git clone` -> `./install.sh` -> first-commands path with no prior
+  context assumed; the "Installing" section now leads with `./install.sh`
+  and keeps the manual `pip install -e .` steps as the documented
+  alternative for anyone who wants more control.
+
+#### Fixed
+
+- Two documentation examples (the README's "Why network eBPF is manual, not
+  a service" and `packaging/systemd/README.md`'s equivalent section)
+  hardcoded `/opt/sentinelforge/venv-ebpf/bin/sentinelforge` - a path from
+  the maintainer's own validation host, not something a GitHub clone
+  reproduces. Replaced with `"$(pwd)/.venv/bin/sentinelforge"`, with a note
+  explaining *why* an absolute path is needed here at all (`sudo` resets
+  `$PATH` by default, so it will not see an activated venv).
+
+#### Verified
+
+- `./install.sh` run against a clean copy of this checkout (all git-ignored
+  build state and `.venv/` removed, standing in for a fresh `git clone`):
+  default install, `--dry-run`, re-run for idempotency, `--link`, and
+  `--extras none --editable` all completed correctly, including the
+  optional-dependency degradation message when Flask is absent.
+- Post-install CLI smoke test from the installed (non-editable) command:
+  `--version`, `--help`, `sources`, `rules`, `sensor list`, `sensor check`,
+  `simulate list`, and `simulate all --report` (15/15 scenarios, 528/528
+  checks passed).
+- `sentinelforge dashboard --demo` from the installed command served `/`,
+  `/static/css/sentinelforge.css`, and `/static/js/app.js` at `200`.
+- Installing directly from the built wheel (`pip install
+  'sentinelforge-1.0.0rc1-py3-none-any.whl[dashboard]'`, no editable
+  checkout involved) produced a working `sentinelforge` command with the
+  dashboard templates and static assets present, confirming the packaging
+  fix from Phase 9.1 still holds.
+- Full suite: `1,936 passed`, unchanged. `python -m build` still produces a
+  wheel and sdist; `git diff --check` is clean.
+
 ## Phases 1-8 (summary)
 
 Detailed in the README rather than here; version numbers below were assigned
